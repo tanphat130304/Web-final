@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ocr_api
+    restart: always # Cân nhắc 'on-failure' nếu muốn debug dễ hơn
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=mysql+pymysql://admin:Admin1303@web-final.cpy0qmuay2nm.ap-southeast-2.rds.amazonaws.com:3306/db_sub_video
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_BUCKET_TEST=${AWS_BUCKET_TEST} # Đảm bảo các biến này được set trong .env hoặc môi trường của bạn
+      - AWS_REGION=${AWS_REGION}
+      - SECRET_KEY=${SECRET_KEY}
+      - ALGORITHM=${ALGORITHM}
+      - ACCESS_TOKEN_EXPIRE_MINUTES=${ACCESS_TOKEN_EXPIRE_MINUTES}
+    volumes:
+      - .:/app
+      - ./ffmpeg_logs:/app/ffmpeg_logs # Mount thư mục để lưu log FFmpeg ra ngoài
+    networks:
+      - ocr_network
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 300 # Bỏ --reload, tăng timeout
+    deploy:
+      resources:
+        limits:
+          cpus: "4.0"  # Bắt đầu với 2.0, bạn có thể thử tăng lên "4.0" nếu máy chủ cho phép
+          memory: "6g" # Tăng RAM
+        # reservations: # Cân nhắc đặt reservations nếu cần đảm bảo tài nguyên tối thiểu
+        #   cpus: "1.0"
+        #   memory: "2g"
+
+networks:
+  ocr_network:
+    driver: bridge

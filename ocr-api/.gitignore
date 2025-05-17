@@ -1,0 +1,60 @@
+# Temporary directories
+tempvideo/
+tempsrt/
+tempaudio/
+temp_thumbnails/
+temp_processing/
+
+# Python virtual environments
+venv/
+venv_new/
+.env
+.venv
+env/
+ENV/
+create_env.py/
+config.py
+
+# Python compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+logs/
+*.log
+
+# Local database files
+*.db
+*.sqlite3
+
+# Docker volumes
+mysql_data/
+
+# Environment variables
+.env
+.env.local
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# Testing
+.coverage
+htmlcov/
