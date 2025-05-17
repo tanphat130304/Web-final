@@ -1,9 +1,4 @@
-# Temporary directories
-tempvideo/
-tempsrt/
-tempaudio/
-temp_thumbnails/
-temp_processing/
+
 
 # Python virtual environments
 venv/

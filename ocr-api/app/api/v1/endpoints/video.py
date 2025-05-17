@@ -153,25 +153,25 @@ async def upload_video(
         # No need to check for not video_url, as upload_file_to_s3 will raise exceptions
 
         # Save video to database
-            db_video = video_service.create_video(
-                db,
-                VideoUpdate(file_name=unique_videoname, file_url=video_url),
-                current_user.user_id
-            )
+        db_video = video_service.create_video(
+            db,
+            VideoUpdate(file_name=unique_videoname, file_url=video_url),
+            current_user.user_id
+        )
 
         # Save SRT files to database
-            srt_original_url = upload_file_to_s3(srt_path, settings.AWS_BUCKET_INPUT_SRT)
-            srt_translated_url = upload_file_to_s3(translate_srt_path, settings.AWS_BUCKET_INPUT_SRT)
+        srt_original_url = upload_file_to_s3(srt_path, settings.AWS_BUCKET_INPUT_SRT)
+        srt_translated_url = upload_file_to_s3(translate_srt_path, settings.AWS_BUCKET_INPUT_SRT)
 
-            video_service.create_srt(
+        video_service.create_srt(
             db, 
             SRTCreate(
                 srt_name=unique_srtname, 
                 srt_url=srt_original_url,
                 srt_url_sub=srt_translated_url, 
                 video_id=db_video.video_id
-                )
             )
+        )
 
         return JSONResponse(
             status_code=201,
