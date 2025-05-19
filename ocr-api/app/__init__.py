@@ -31,13 +31,28 @@ def create_app() -> FastAPI:
         lifespan=lifespan
     )
 
+    # Define allowed origins explicitly to resolve CORS issues
+    allowed_origins = [
+        "http://localhost:3000",  # React development server
+        "http://127.0.0.1:3000",
+        "http://localhost:5173",  # Vite default port
+        "http://127.0.0.1:5173",
+        "http://localhost",
+        settings.frontend_url,
+    ]
+
+    # Print allowed origins for debugging
+    print(f"CORS Allowed Origins: {allowed_origins}")
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=allowed_origins,
+        allow_origin_regex=None,  # No regex pattern to avoid potential misconfigurations
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
         allow_headers=["*"],
+        expose_headers=["Content-Disposition"],
+        max_age=600,  # Cache preflight requests for 10 minutes
     )
 
     app.include_router(api_router, prefix="/api/v1")

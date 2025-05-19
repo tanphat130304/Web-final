@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, Response
 from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
 from app.core.database import get_db
@@ -17,7 +17,7 @@ from app.modules.video_process import extract_subtitles, translate_srt, compress
 from app.modules.module.module_meger_video_with_srt_translate import add_subtitles_to_video
 from app.modules.module.module_text_to_speech_v2 import generate_audio_from_srt
 from app.modules.module.module_process_with_video_sync import process_video_with_sync
-from app.modules.s3_process import upload_file_to_s3, download_file_from_s3, delete_file_from_s3, replace_file_on_s3
+from app.modules.s3_process import upload_file_to_s3, download_file_from_s3, delete_file_from_s3, replace_file_on_s3, get_s3_client
 from app.modules.module.module_export_video import export_final_video
 import boto3
 import os
@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 import gc
 from botocore.exceptions import ClientError
+import urllib.parse
 
 def safe_remove_file(file_path, max_retries=5, delay=0.5):
     """Xoa file an toan voi co che thu lai nhieu lan"""
@@ -262,8 +263,8 @@ async def add_subtitles_to_video_endpoint(
 
     # Extract filenames from URLs
     try:
-        srt_filename = os.path.basename(srt_db.srt_url_sub)
-        video_filename = os.path.basename(video_db.file_url)
+        srt_filename = os.path.basename(urllib.parse.urlparse(srt_db.srt_url_sub).path)
+        video_filename = os.path.basename(urllib.parse.urlparse(video_db.file_url).path)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -372,8 +373,8 @@ async def create_videotts(
 
     # Trích xuất tên file từ URL
     try:
-        srt_filename = Path(srt_db.srt_url_sub).name
-        video_filename = Path(video_db.file_url).name
+        srt_filename = Path(urllib.parse.urlparse(srt_db.srt_url_sub).path).name
+        video_filename = Path(urllib.parse.urlparse(video_db.file_url).path).name
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -528,7 +529,7 @@ async def export_video_tts(
         
     try:
         # Lấy tên file
-        video_tts_filename = os.path.basename(videotts_db.video_tts_url)
+        video_tts_filename = os.path.basename(urllib.parse.urlparse(videotts_db.video_tts_url).path)
         
         # Đường dẫn tạm
         video_tts_tmp = os.path.join(temp_dirs["video"], video_tts_filename)
@@ -629,8 +630,8 @@ async def upload_srt(
         os.makedirs(dir_path, exist_ok=True)
 
     # Generate unique filenames
-    srt_subtitle = os.path.basename(srt_db.srt_url)
-    srt_translate = os.path.basename(srt_db.srt_url_sub)
+    srt_subtitle = os.path.basename(urllib.parse.urlparse(srt_db.srt_url).path)
+    srt_translate = os.path.basename(urllib.parse.urlparse(srt_db.srt_url_sub).path)
 
     # Define file paths
     file_paths = {
@@ -735,7 +736,9 @@ async def get_videos(
             # Kiểm tra xem thumbnail đã tồn tại chưa
             if not os.path.exists(thumbnail_path):
                 # Tải video từ S3
-                video_tmp = os.path.join("tempvideo", os.path.basename(video.file_url))
+                cleaned_video_url_path = urllib.parse.urlparse(video.file_url).path
+                video_tmp_filename = os.path.basename(cleaned_video_url_path)
+                video_tmp = os.path.join("tempvideo", video_tmp_filename)
                 os.makedirs("tempvideo", exist_ok=True)
                 
                 download_success = download_file_from_s3(
@@ -801,35 +804,162 @@ async def get_video_by_id(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # First check if video exists in database
     video_db = db.query(Video).filter(Video.video_id == video_id).first()
+    
+    # Debug log - Print video database query info
+    print(f"DEBUG - Video lookup in get_video_by_id:")
+    print(f"  Looking for video_id: {video_id}")
+    print(f"  Found video: {video_db is not None}")
+    if video_db:
+        print(f"  Video details:")
+        print(f"    file_name: {video_db.file_name}")
+        print(f"    file_url: {video_db.file_url}")
     if not video_db:
-        raise HTTPException(status_code=404, detail="Video not exist")
+        raise HTTPException(status_code=404, detail=f"Video with ID {video_id} not found in database")
+    
+    # Check user authorization
     if current_user.user_id != video_db.user_id:
         raise HTTPException(status_code=403, detail="User not authorized to access this video")
-    # download video from s3
+    
+    # Create necessary temp directories
     temp_dirs = {
         "video": "tempvideo"
     }
     for dir_path in temp_dirs.values():
         os.makedirs(dir_path, exist_ok=True)
+    
     # Extract filenames from URLs
     try:
-        video_filename = os.path.basename(video_db.file_url)
+        video_url_path = urllib.parse.urlparse(video_db.file_url).path
+        video_filename = os.path.basename(video_url_path)
+        s3_key = video_filename  # The key in S3 is typically the filename
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process file names: {str(e)}"
+            detail=f"Failed to process file path from URL: {str(e)}"
         )
+    
     # Define file paths
     video_tmp = os.path.join(temp_dirs["video"], video_filename)
-    # Download video from S3
-    download_file_from_s3(video_db.file_url, settings.AWS_BUCKET_INPUT_VIDEO, video_tmp)
-    return FileResponse(
-        path=video_tmp,
-        media_type="video/mp4",
-        filename=video_filename
-    )  
+    
+    # Check if file exists in S3 before attempting download
+    try:
+        s3 = get_s3_client()
+        # Use head_object to check if file exists without downloading
+        try:
+            s3.head_object(Bucket=settings.AWS_BUCKET_INPUT_VIDEO, Key=s3_key)
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "404" or error_code == "NoSuchKey":
+                # File not found in S3
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Video file not found in storage: {video_filename}"
+                )
+            elif error_code == "403" or error_code == "AccessDenied":
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Access denied to video file in storage"
+                )
+            else:
+                # Other S3 errors
+                print(f"S3 error checking video {video_id}, key {s3_key}: {str(e)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Error accessing video in storage: {str(e)}"
+                )
+                
+        # Now download the file from S3
+        try:
+            download_result = download_file_from_s3(
+                video_db.file_url, 
+                settings.AWS_BUCKET_INPUT_VIDEO, 
+                video_tmp
+            )
+            
+            if not download_result:
+                raise HTTPException(
+                    status_code=500, 
+                    detail="Failed to download video from storage"
+                )
+                
+            if not os.path.exists(video_tmp) or os.path.getsize(video_tmp) == 0:
+                raise HTTPException(
+                    status_code=500, 
+                    detail="Downloaded video file is empty or missing"
+                )
+                
+            # Return the file with background cleanup task
+            return FileResponse(
+                path=video_tmp,
+                media_type="video/mp4",  # Consider detecting the actual media type
+                filename=video_filename,
+                background=BackgroundTask(lambda: safe_remove_file(video_tmp))
+            )
+            
+        except Exception as download_error:
+            # Handle download errors
+            print(f"Error downloading video {video_id} from S3: {str(download_error)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Error downloading video: {str(download_error)}"
+            )
+            
+    except HTTPException:
+        # Pass through HTTP exceptions we've already raised
+        raise
+    except Exception as e:
+        # Catch any other unexpected errors
+        print(f"Unexpected error in get_video_by_id for {video_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Unexpected error processing video request: {str(e)}"
+        )
 
+@router.head("/{video_id}")
+async def head_video_by_id(
+    video_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    video_db = db.query(Video).filter(Video.video_id == video_id).first()
+    if not video_db:
+        raise HTTPException(status_code=404, detail="Video not exist")
+    if current_user.user_id != video_db.user_id:
+        raise HTTPException(status_code=403, detail="User not authorized to access this video")
+
+    s3_key = os.path.basename(urllib.parse.urlparse(video_db.file_url).path)
+    s3_bucket = settings.AWS_BUCKET_INPUT_VIDEO
+
+    try:
+        s3 = get_s3_client()
+        metadata = s3.head_object(Bucket=s3_bucket, Key=s3_key)
+        
+        headers = {
+            "Content-Type": metadata.get("ContentType", "video/mp4"),
+            "Content-Length": str(metadata.get("ContentLength", "")),
+            "ETag": metadata.get("ETag", "")
+        }
+        if metadata.get("LastModified"):
+            headers["Last-Modified"] = metadata["LastModified"].strftime("%a, %d %b %Y %H:%M:%S GMT")
+            
+        headers = {k: v for k, v in headers.items() if v} # Filter out empty default values
+
+        return Response(status_code=200, headers=headers)
+
+    except ClientError as e:
+        error_code = e.response.get("Error", {}).get("Code")
+        if error_code == "404" or error_code == "NoSuchKey":
+            raise HTTPException(status_code=404, detail=f"Video file not found on S3 (key: {s3_key}).")
+        elif error_code == "403" or error_code == "AccessDenied":
+            raise HTTPException(status_code=403, detail="Access denied to video file on S3.")
+        else:
+            print(f"Error fetching S3 metadata for HEAD /videos/{video_id}, key {s3_key}: {e}") # Consider using logger
+            raise HTTPException(status_code=500, detail="Error fetching video metadata from S3.")
+    except Exception as e:
+        print(f"Unexpected error in HEAD /videos/{video_id}: {e}") # Consider using logger
+        raise HTTPException(status_code=500, detail="Unexpected error processing request.")
 
 #pass
 @router.get("/videotts/{video_tts_id}", response_model=None)
@@ -854,7 +984,7 @@ async def get_video_tts_by_id(
         os.makedirs(dir_path, exist_ok=True)
     # Extract filenames from URLs
     try:
-        video_filename = os.path.basename(video_tts_db.video_tts_url)
+        video_filename = os.path.basename(urllib.parse.urlparse(video_tts_db.video_tts_url).path)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -904,11 +1034,13 @@ async def get_videottses(
             # Kiểm tra xem thumbnail đã tồn tại chưa
             if not os.path.exists(thumbnail_path):
                 # Tải video từ S3
-                video_tmp = os.path.join("tempvideo", os.path.basename(videotts.video_tts_url))
+                cleaned_videotts_url_path = urllib.parse.urlparse(videotts.video_tts_url).path
+                video_tmp_filename = os.path.basename(cleaned_videotts_url_path)
+                video_tmp = os.path.join("tempvideo", video_tmp_filename) # Use cleaned filename for local path
                 os.makedirs("tempvideo", exist_ok=True)
                 
                 download_success = download_file_from_s3(
-                    videotts.video_tts_url,
+                    videotts.video_tts_url, # Original URL for S3 download
                     settings.AWS_BUCKET_VIDEO_SUB,
                     video_tmp
                 )
@@ -1012,7 +1144,7 @@ async def get_srt_by_video_id(
         os.makedirs(dir_path, exist_ok=True)
     # Extract filenames from URLs
     try:
-        srt_filename = os.path.basename(srt_db.srt_url)
+        srt_filename = os.path.basename(urllib.parse.urlparse(srt_db.srt_url).path)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -1054,7 +1186,7 @@ async def get_srt_trans_by_video_id(
         os.makedirs(dir_path, exist_ok=True)
     # Extract filenames from URLs
     try:
-        srt_sub_filename = os.path.basename(srt_db.srt_url_sub)
+        srt_sub_filename = os.path.basename(urllib.parse.urlparse(srt_db.srt_url_sub).path)
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -1069,6 +1201,119 @@ async def get_srt_trans_by_video_id(
         media_type="application/x-subrip",
         filename=srt_sub_filename
     )
+
+# New endpoint to get a pre-signed URL for direct video access
+@router.get("/api/videos/{video_id}")
+async def get_video_url(
+    video_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get a pre-signed URL for direct video access from S3
+    
+    Args:
+        video_id: ID of the video to access
+        db: Database session
+        current_user: Current authenticated user
+        
+    Returns:
+        JSON response with the pre-signed URL
+        
+    Raises:
+        HTTPException for various error conditions
+    """
+    # Check if video exists in database
+    video_db = db.query(Video).filter(Video.video_id == video_id).first()
+    
+    # Debug log - Print video database object
+    print(f"DEBUG - Video DB Query Results for ID {video_id}:")
+    print(f"Found video: {video_db is not None}")
+    if video_db:
+        print(f"Video details:")
+        print(f"  video_id: {video_db.video_id}")
+        print(f"  user_id: {video_db.user_id}")
+        print(f"  file_name: {video_db.file_name}")
+        print(f"  file_url: {video_db.file_url}")
+        print(f"  created_at: {video_db.created_at}")
+        
+        # Check S3 information
+        try:
+            video_url_path = urllib.parse.urlparse(video_db.file_url).path
+            s3_key = os.path.basename(video_url_path)
+            print(f"  S3 information:")
+            print(f"    Bucket: {settings.AWS_BUCKET_INPUT_VIDEO}")
+            print(f"    Key: {s3_key}")
+        except Exception as e:
+            print(f"  Error parsing S3 info: {str(e)}")
+    if not video_db:
+        raise HTTPException(status_code=404, detail=f"Video with ID {video_id} not found in database")
+    
+    # Check user authorization
+    if current_user.user_id != video_db.user_id:
+        raise HTTPException(status_code=403, detail="User not authorized to access this video")
+    
+    try:
+        # Extract S3 key from the stored URL
+        video_url_path = urllib.parse.urlparse(video_db.file_url).path
+        s3_key = os.path.basename(video_url_path)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to process file path from URL: {str(e)}"
+        )
+
+    try:
+        # Verify the object exists in S3
+        s3 = get_s3_client()
+        try:
+            s3.head_object(Bucket=settings.AWS_BUCKET_INPUT_VIDEO, Key=s3_key)
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "404" or error_code == "NoSuchKey":
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Video file not found in storage: {s3_key}"
+                )
+            elif error_code == "403" or error_code == "AccessDenied":
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Access denied to video file in storage"
+                )
+            else:
+                print(f"S3 error checking video {video_id}, key {s3_key}: {str(e)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Error accessing video in storage: {str(e)}"
+                )
+        
+        # Generate a pre-signed URL for the S3 object
+        presigned_url = s3.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': settings.AWS_BUCKET_INPUT_VIDEO,
+                'Key': s3_key
+            },
+            ExpiresIn=3600  # URL is valid for 1 hour
+        )
+        
+        return JSONResponse(
+            status_code=200,
+            content={
+                "url": presigned_url,
+                "file_name": video_db.file_name,
+                "duration": None  # The client will determine this when loading the video
+            }
+        )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Unexpected error in get_video_url for {video_id}: {str(e)}")
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Unexpected error generating pre-signed URL: {str(e)}"
+        )
 
 
 

@@ -1,0 +1,92 @@
+1
+00:00:00,625 --> 00:00:02,916
+Everybody has a. turn back moment
+
+2
+00:00:02,916 --> 00:00:03,541
+You have a moment where you
+
+3
+00:00:03,541 --> 00:00:03,750
+You have a t where you moment
+
+4
+00:00:03,750 --> 00:00:04,166
+You have a moment t where you
+
+5
+00:00:04,166 --> 00:00:06,458
+could go forward or you can
+
+6
+00:00:06,458 --> 00:00:07,708
+give up
+
+7
+00:00:07,708 --> 00:00:08,541
+But the thing you have to
+
+8
+00:00:08,541 --> 00:00:10,208
+keep in mind before you
+
+9
+00:00:10,208 --> 00:00:10,833
+give up,
+
+10
+00:00:10,833 --> 00:00:11,250
+Y 5
+
+11
+00:00:11,250 --> 00:00:11,458
+Y S
+
+12
+00:00:11,458 --> 00:00:13,750
+is that if you give up
+
+13
+00:00:13,750 --> 00:00:16,041
+the guarantee is,it will
+
+14
+00:00:16,041 --> 00:00:16,250
+Y 9
+
+15
+00:00:16,250 --> 00:00:16,875
+never happen
+
+16
+00:00:16,875 --> 00:00:17,500
+Y F
+
+17
+00:00:17,500 --> 00:00:18,958
+That's the guarantee of
+
+18
+00:00:18,958 --> 00:00:21,458
+quitting. That it will never happen
+
+19
+00:00:21,458 --> 00:00:23,125
+No way under the sun
+
+20
+00:00:23,125 --> 00:00:24,375
+The only way the
+
+21
+00:00:24,375 --> 00:00:26,666
+possibility remains that
+
+22
+00:00:26,666 --> 00:00:28,541
+it can happen is if you
+
+23
+00:00:28,541 --> 00:00:31,650
+never give up No matter what
+

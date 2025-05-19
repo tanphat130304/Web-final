@@ -1,6 +1,9 @@
 import { useState, useEffect } from 'react';
 import useAuthStore from '@/store/use-auth-store';
 
+// API configuration - in a real application, this would be from environment variables
+const API_BASE_URL = 'http://localhost:8000';
+
 /**
  * Custom hook to load a video with authentication
  * @param videoId The ID of the video to load
@@ -19,7 +22,13 @@ export const useAuthenticatedVideo = (videoId: string | null) => {
       setBlobUrl(null);
     }
 
-    if (!videoId || !accessToken) {
+    if (!videoId) {
+      setError("No video ID provided");
+      return;
+    }
+    
+    if (!accessToken) {
+      setError("Not authenticated. Please log in to access videos.");
       return;
     }
 
@@ -30,7 +39,7 @@ export const useAuthenticatedVideo = (videoId: string | null) => {
         
         console.log(`Fetching video with ID: ${videoId}`);
         
-        const response = await fetch(`http://localhost:8000/api/v1/videos/${videoId}`, {
+        const response = await fetch(`${API_BASE_URL}/api/v1/videos/${videoId}`, {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${accessToken}`
@@ -38,7 +47,14 @@ export const useAuthenticatedVideo = (videoId: string | null) => {
         });
 
         if (!response.ok) {
-          throw new Error(`Failed to fetch video: ${response.status}`);
+          const status = response.status;
+          if (status === 404) {
+            throw new Error(`Video not found (404). The requested video ID ${videoId} does not exist.`);
+          } else if (status === 401 || status === 403) {
+            throw new Error(`Authentication error (${status}). Please log in again.`);
+          } else {
+            throw new Error(`Failed to fetch video: ${status}`);
+          }
         }
 
         const blob = await response.blob();

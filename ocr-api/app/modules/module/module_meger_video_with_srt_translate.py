@@ -74,7 +74,7 @@ def add_subtitles_to_video(video_path, subtitle_path, output_path):
             movflags='+faststart',
             loglevel='verbose'  # Increased log verbosity
         )
-        
+
         print(f"Running FFmpeg command: {' '.join(ffmpeg.compile(output_stream_definition, overwrite_output=True))}")
 
         # Run FFmpeg and capture stdout/stderr

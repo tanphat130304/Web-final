@@ -542,14 +542,14 @@ const SubtitleDisplay: React.FC<SubtitleDisplayProps> = ({ subtitles: propSubtit
               key={subtitle.id}
               id={`container_${subtitle.id}`}
               className="string_container"
-              name={`text_${subtitle.id}`}
+              data-name={`text_${subtitle.id}`}
               style={containerStyle}
             >
               <div className="upline line" style={headerStyle}>
                 <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                   <div
                     id={`upline_${subtitle.id}`}
-                    name={`text_${subtitle.id}`}
+                    data-name={`text_${subtitle.id}`}
                     onDoubleClick={() => console.log("Edit main string", subtitle.id)}
                     className="l1 src-string line2"
                     style={mainTextStyle}
@@ -560,7 +560,7 @@ const SubtitleDisplay: React.FC<SubtitleDisplayProps> = ({ subtitles: propSubtit
                     id={`delete_${subtitle.id}`}
                     onClick={() => deleteLine(subtitle.id)}
                     className="delete_line"
-                    name={`text_${subtitle.id}`}
+                    data-name={`text_${subtitle.id}`}
                     style={{ cursor: "pointer" }}
                   >
                     <i id={`icon_${subtitle.id}`} className="fa-solid fa-trash-can" />
@@ -568,7 +568,7 @@ const SubtitleDisplay: React.FC<SubtitleDisplayProps> = ({ subtitles: propSubtit
                   <div
                     id={`reroll_${subtitle.id}`}
                     onClick={() => rerollLine(subtitle.id)}
-                    name={`text_${subtitle.id}`}
+                    data-name={`text_${subtitle.id}`}
                     className="rerool_sound"
                     style={{ cursor: "pointer" }}
                   >
@@ -609,9 +609,8 @@ const SubtitleDisplay: React.FC<SubtitleDisplayProps> = ({ subtitles: propSubtit
                     onClick={() => {}}
                     onChange={() => {}}
                     style={textAreaStyle}
-                  >
-                    {subtitle.translated}
-                  </textarea>
+                    defaultValue={subtitle.translated}
+                  />
                 </div>
               </div>
             </div>

@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react';
 import useAuthStore from '@/store/use-auth-store';
 import useVideoStore, { VideoItem } from '@/store/use-video-store';
 
+// API configuration - use the same base URL as in other hooks
+const API_BASE_URL = 'http://localhost:8000';
+
 interface UseFetchVideoResult {
   videoData: VideoItem | null;
   loading: boolean;
@@ -51,7 +54,7 @@ export const useFetchVideo = (videoId: string | null): UseFetchVideoResult => {
         }
 
         // Tạo URL trực tiếp đến file video với token xác thực
-        const videoUrl = `http://localhost:8000/api/v1/videos/${videoId}`;
+        const videoUrl = `${API_BASE_URL}/api/v1/videos/${videoId}`;
         
         // Tìm video trong danh sách đã lưu trong store
         const videoInfo = videos.find((v) => v.video_id === videoId);
@@ -64,7 +67,7 @@ export const useFetchVideo = (videoId: string | null): UseFetchVideoResult => {
               'Authorization': `Bearer ${accessToken}`
             }
           });
-          
+          console.log('checkResponse', checkResponse);
           if (!checkResponse.ok) {
             if (checkResponse.status === 401) {
               throw new Error('Unauthorized: Please log in again');

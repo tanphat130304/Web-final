@@ -258,15 +258,16 @@ export const SequenceItem: Record<
     // Determine the video source to use
     let videoSrc = details.src;
     
-    // Sử dụng blob URL nếu có
+    // Use blob URL if available 
     if (blobUrl) {
       videoSrc = blobUrl;
       console.log(`Using blob URL for video: ${selectedVideoId}`);
     }
     // Fallback to default source if no blob URL
-    else {
+    else if (!loading && !error) {
       console.log(`Using default video source: ${videoSrc}`);
     }
+    // If there's an error or it's still loading, we'll handle it in the render below
 
     return (
       <Sequence
@@ -293,15 +294,20 @@ export const SequenceItem: Record<
               {loading ? (
                 <div style={{ 
                   display: 'flex', 
+                  flexDirection: 'column',
                   justifyContent: 'center', 
                   alignItems: 'center', 
                   width: '100%', 
                   height: '100%', 
-                  backgroundColor: '#000',
+                  backgroundColor: 'rgba(0, 0, 0, 0.8)',
                   color: '#fff',
-                  fontSize: '16px'
+                  fontSize: '14px'
                 }}>
-                  Loading video...
+                  <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500 mb-3"></div>
+                  <div>Loading video...</div>
+                  <div style={{ fontSize: '12px', color: '#aaa', marginTop: '5px' }}>
+                    {selectedVideoId ? `ID: ${selectedVideoId.slice(0, 8)}...` : 'No video ID available'}
+                  </div>
                 </div>
               ) : error ? (
                 <div style={{ 
@@ -312,15 +318,35 @@ export const SequenceItem: Record<
                   width: '100%', 
                   height: '100%', 
                   backgroundColor: '#000',
-                  color: 'red',
+                  color: '#eee',
                   fontSize: '14px',
                   padding: '20px',
                   textAlign: 'center'
                 }}>
-                  <div>Error loading video:</div>
-                  <div style={{ marginTop: '10px', wordBreak: 'break-word' }}>{error}</div>
-                  <div style={{ marginTop: '10px', fontSize: '12px', color: '#aaa' }}>
-                    Using fallback video source
+                  <div style={{ fontSize: '16px', color: '#ff6b6b', marginBottom: '10px' }}>Could not load video</div>
+                  {error.includes("404") ? (
+                    <div style={{ marginTop: '10px', fontSize: '12px' }}>
+                      The requested video was not found on the server.
+                      <br/>Please check if this video still exists.
+                    </div>
+                  ) : error.includes("401") || error.includes("auth") ? (
+                    <div style={{ marginTop: '10px', fontSize: '12px' }}>
+                      Authentication error. Please try logging in again.
+                    </div>
+                  ) : (
+                    <div style={{ marginTop: '10px', fontSize: '12px' }}>
+                      {error}
+                    </div>
+                  )}
+                  <div style={{ 
+                    marginTop: '15px', 
+                    fontSize: '12px', 
+                    color: '#aaa',
+                    padding: '5px 10px',
+                    border: '1px solid #333',
+                    borderRadius: '4px'
+                  }}>
+                    Using placeholder video
                   </div>
                   <OffthreadVideo
                     startFrom={(item.trim?.from! / 1000) * fps}
