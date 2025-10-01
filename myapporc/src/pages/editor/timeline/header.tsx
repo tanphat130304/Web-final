@@ -2,6 +2,8 @@ import { Button } from "@/components/ui/button";
 import { dispatch } from "@designcombo/events";
 import {
   ACTIVE_SPLIT,
+  HISTORY_REDO,
+  HISTORY_UNDO,
   LAYER_CLONE,
   LAYER_DELETE,
   TIMELINE_SCALE_CHANGED,
@@ -10,6 +12,7 @@ import { PLAYER_PAUSE, PLAYER_PLAY } from "@/global";
 import { frameToTimeString, getCurrentTime, timeToString } from "../utils/time";
 import useStore from "@/pages/editor/store/use-store";
 import { SquareSplitHorizontal, Trash, ZoomIn, ZoomOut } from "lucide-react";
+import { Icons } from "@/components/shared/icons";
 import {
   getFitZoomLevel,
   getNextZoomLevel,
@@ -35,6 +38,14 @@ const Header = () => {
   useUpdateAnsestors({ playing, playerRef });
 
   const currentFrame = useCurrentPlayerFrame(playerRef!);
+
+  const handleUndo = () => {
+    dispatch(HISTORY_UNDO);
+  };
+
+  const handleRedo = () => {
+    dispatch(HISTORY_REDO);
+  };
 
   const doActiveDelete = () => {
     dispatch(LAYER_DELETE);
@@ -110,6 +121,22 @@ const Header = () => {
           }}
         >
           <div className="flex px-2">
+            <Button
+              onClick={handleUndo}
+              className="text-muted-foreground"
+              variant="ghost"
+              size="icon"
+            >
+              <Icons.undo width={20} />
+            </Button>
+            <Button
+              onClick={handleRedo}
+              className="text-muted-foreground"
+              variant="ghost"
+              size="icon"
+            >
+              <Icons.redo width={20} />
+            </Button>
             <Button
               disabled={!activeIds.length}
               onClick={doActiveDelete}

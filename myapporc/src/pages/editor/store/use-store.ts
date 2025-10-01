@@ -34,6 +34,10 @@ interface ITimelineStore {
   sceneMoveableRef: React.RefObject<Moveable> | null;
   setSceneMoveableRef: (ref: React.RefObject<Moveable>) => void;
   setState: (state: any) => Promise<void>;
+  
+  // Audio control states
+  isMuted: boolean;
+  setIsMuted: (muted: boolean) => void;
 }
 
 const useStore = create<ITimelineStore>((set) => ({
@@ -85,6 +89,8 @@ const useStore = create<ITimelineStore>((set) => ({
   setPlayerRef: (playerRef: React.RefObject<PlayerRef> | null) =>
     set({ playerRef }),
   setSceneMoveableRef: (ref) => set({ sceneMoveableRef: ref }),
+  isMuted: false,
+  setIsMuted: (muted: boolean) => set({ isMuted: muted }),
 }));
 
 export default useStore;

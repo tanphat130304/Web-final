@@ -1,0 +1,57 @@
+/* Custom scrollbar styles for ScrollIsolatedContainer */
+.scroll-isolated-container {
+  /* WebKit browsers (Chrome, Safari, Edge) */
+  scrollbar-width: thin;
+  scrollbar-color: #6b7280 #1f2937;
+}
+
+.scroll-isolated-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.scroll-isolated-container::-webkit-scrollbar-track {
+  background: #1f2937;
+  border-radius: 4px;
+}
+
+.scroll-isolated-container::-webkit-scrollbar-thumb {
+  background: #6b7280;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+}
+
+.scroll-isolated-container::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.scroll-isolated-container::-webkit-scrollbar-thumb:active {
+  background: #d1d5db;
+}
+
+/* Firefox */
+.scroll-isolated-container {
+  scrollbar-width: thin;
+  scrollbar-color: #6b7280 #1f2937;
+}
+
+/* Ensure smooth scrolling and better performance */
+.scroll-isolated-container {
+  scroll-behavior: auto; /* Changed from smooth to auto for manual control */
+  will-change: scroll-position; /* Optimize for scrolling */
+  transform: translateZ(0); /* Force hardware acceleration */
+}
+
+/* Additional isolation properties */
+.scroll-isolated-container {
+  isolation: isolate;
+  contain: layout style paint;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  
+  /* Prevent scroll chaining */
+  touch-action: pan-y;
+  
+  /* Better subpixel rendering */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+} 

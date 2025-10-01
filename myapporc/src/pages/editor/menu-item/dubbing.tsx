@@ -65,7 +65,7 @@ export const Dubbing = () => {
           // Lấy video preview
           getVideoPreview(storedVideoTtsId);
         } else {
-          console.log(`Không tìm thấy video_tts_id cho video ${selectedVideoId}`);
+          console.debug(`Không tìm thấy video_tts_id cho video ${selectedVideoId}`);
           setIsDubbingComplete(false);
           setVideoTtsId(null);
         }

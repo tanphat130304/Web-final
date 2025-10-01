@@ -49,9 +49,9 @@ def create_app() -> FastAPI:
         allow_origins=allowed_origins,
         allow_origin_regex=None,  # No regex pattern to avoid potential misconfigurations
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH", "HEAD"],
         allow_headers=["*"],
-        expose_headers=["Content-Disposition"],
+        expose_headers=["Content-Disposition", "ETag", "Cache-Control"],
         max_age=600,  # Cache preflight requests for 10 minutes
     )
 

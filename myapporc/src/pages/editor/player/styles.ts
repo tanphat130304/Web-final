@@ -3,20 +3,21 @@ import { IImage, IText, ITrackItem } from "@designcombo/types";
 export const calculateCropStyles = (
   details: IImage["details"],
   crop: IImage["details"]["crop"],
-) => ({
+): React.CSSProperties => ({
   width: details.width || "100%",
   height: details.height || "auto",
   top: -crop.y || 0,
   left: -crop.x || 0,
-  position: "absolute",
+  position: "absolute" as const,
   borderRadius: `${Math.min(crop.width, crop.height) * ((details.borderRadius || 0) / 100)}px`,
 });
 
 export const calculateMediaStyles = (
   details: ITrackItem["details"],
   crop: ITrackItem["details"]["crop"],
+  options?: { preserveAspectRatio?: boolean }
 ) => {
-  return {
+  const baseStyles: React.CSSProperties = {
     pointerEvents: "none",
     boxShadow: [
       `0 0 0 ${details.borderWidth}px ${details.borderColor}`,
@@ -27,7 +28,20 @@ export const calculateMediaStyles = (
       .filter(Boolean)
       .join(", "),
     ...calculateCropStyles(details, crop),
-  } as React.CSSProperties;
+  };
+
+  // Add aspect ratio preservation for videos
+  if (options?.preserveAspectRatio) {
+    return {
+      ...baseStyles,
+      objectFit: "contain" as const,
+      objectPosition: "center",
+      width: "100%",
+      height: "100%",
+    };
+  }
+
+  return baseStyles;
 };
 
 export const calculateTextStyles = (

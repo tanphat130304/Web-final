@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { dispatch } from "@designcombo/events";
-import { HISTORY_UNDO, HISTORY_REDO, DESIGN_RESIZE } from "@designcombo/state";
+import { DESIGN_RESIZE } from "@designcombo/state";
 import logoDark from "@/assets/logo-dark.png";
 import { Icons } from "@/components/shared/icons";
 import {
@@ -111,14 +111,6 @@ export default function Navbar() {
     }
   }, [store.trackItemsMap, selectedVideoId, videos]);
 
-  const handleUndo = () => {
-    dispatch(HISTORY_UNDO);
-  };
-
-  const handleRedo = () => {
-    dispatch(HISTORY_REDO);
-  };
-
   const openLink = (url: string) => {
     window.open(url, "_blank"); // '_blank' will open the link in a new tab
   };
@@ -134,24 +126,6 @@ export default function Navbar() {
       <div className="pointer-events-auto flex h-14 items-center gap-2">
         <div className="flex h-16 w-16 items-center justify-center rounded-md bg-background">
           <img src={logoDark} alt="logo" className="h-16 w-16" />
-        </div>
-        <div className="flex h-12 items-center bg-background px-1.5">
-          <Button
-            onClick={handleUndo}
-            className="text-muted-foreground"
-            variant="ghost"
-            size="icon"
-          >
-            <Icons.undo width={20} />
-          </Button>
-          <Button
-            onClick={handleRedo}
-            className="text-muted-foreground"
-            variant="ghost"
-            size="icon"
-          >
-            <Icons.redo width={20} />
-          </Button>
         </div>
       </div>
 

@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, File, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, File, UploadFile, Request
 from fastapi.responses import JSONResponse, FileResponse, Response
 from starlette.background import BackgroundTask
 from sqlalchemy.orm import Session
@@ -28,6 +28,7 @@ from pathlib import Path
 import gc
 from botocore.exceptions import ClientError
 import urllib.parse
+import uuid
 
 def safe_remove_file(file_path, max_retries=5, delay=0.5):
     """Xoa file an toan voi co che thu lai nhieu lan"""
@@ -802,7 +803,8 @@ async def get_videos(
 async def get_video_by_id(
     video_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ):
     # First check if video exists in database
     video_db = db.query(Video).filter(Video.video_id == video_id).first()
@@ -840,15 +842,32 @@ async def get_video_by_id(
             detail=f"Failed to process file path from URL: {str(e)}"
         )
     
-    # Define file paths
-    video_tmp = os.path.join(temp_dirs["video"], video_filename)
+    # Generate a unique temporary filename to avoid conflicts between concurrent requests
+    unique_request_id = str(uuid.uuid4())
+    video_tmp = os.path.join(temp_dirs["video"], f"{unique_request_id}_{video_filename}")
     
     # Check if file exists in S3 before attempting download
     try:
         s3 = get_s3_client()
         # Use head_object to check if file exists without downloading
         try:
-            s3.head_object(Bucket=settings.AWS_BUCKET_INPUT_VIDEO, Key=s3_key)
+            s3_object = s3.head_object(Bucket=settings.AWS_BUCKET_INPUT_VIDEO, Key=s3_key)
+            
+            # Kiểm tra ETag từ client request để hỗ trợ caching
+            if request and "if-none-match" in request.headers:
+                client_etag = request.headers["if-none-match"].strip('"')
+                server_etag = s3_object.get("ETag", "").strip('"')
+                
+                if client_etag and server_etag and client_etag == server_etag:
+                    # Trả về 304 Not Modified nếu ETag khớp
+                    print(f"ETag match for video {video_id}: {client_etag}. Returning 304.")
+                    return Response(
+                        status_code=304,
+                        headers={
+                            "ETag": f'"{server_etag}"',
+                            "Cache-Control": "max-age=3600"
+                        }
+                    )
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code")
             if error_code == "404" or error_code == "NoSuchKey":
@@ -872,6 +891,7 @@ async def get_video_by_id(
                 
         # Now download the file from S3
         try:
+            print(f"Downloading video {video_id} to temp file: {video_tmp}")
             download_result = download_file_from_s3(
                 video_db.file_url, 
                 settings.AWS_BUCKET_INPUT_VIDEO, 
@@ -889,18 +909,58 @@ async def get_video_by_id(
                     status_code=500, 
                     detail="Downloaded video file is empty or missing"
                 )
+            
+            file_size = os.path.getsize(video_tmp)
+            print(f"Downloaded video size: {file_size} bytes")
+            
+            # Tạo ETag từ nội dung file hoặc sử dụng ETag từ S3
+            etag = s3_object.get("ETag", "").strip('"')
+            if not etag:
+                # Nếu không có ETag từ S3, tạo từ file size và modification time
+                file_stat = os.stat(video_tmp)
+                etag = f"{file_stat.st_size}-{file_stat.st_mtime}"
                 
+            # Set Cache-Control header to enable client-side caching
+            headers = {
+                "Cache-Control": "max-age=3600",  # Cache for 1 hour
+                "ETag": f'"{etag}"',  # Add ETag for cache validation
+                "Content-Type": "video/mp4",
+                "Content-Length": str(file_size),
+                "Content-Disposition": f'inline; filename="{video_filename}"',
+                "Access-Control-Allow-Origin": "*"  # Allow cross-origin access
+            }
+            
+            # Define a proper cleanup function that waits before deleting
+            async def delayed_cleanup(path):
+                try:
+                    # Wait for 10 seconds to ensure streaming has started
+                    await asyncio.sleep(10)
+                    if os.path.exists(path):
+                        print(f"Removing temp file: {path}")
+                        os.remove(path)
+                    else:
+                        print(f"Temp file already removed: {path}")
+                except Exception as e:
+                    print(f"Error removing temp file {path}: {e}")
+            
             # Return the file with background cleanup task
             return FileResponse(
                 path=video_tmp,
-                media_type="video/mp4",  # Consider detecting the actual media type
+                media_type="video/mp4",
                 filename=video_filename,
-                background=BackgroundTask(lambda: safe_remove_file(video_tmp))
+                headers=headers,
+                background=BackgroundTask(delayed_cleanup, path=video_tmp)
             )
             
         except Exception as download_error:
             # Handle download errors
             print(f"Error downloading video {video_id} from S3: {str(download_error)}")
+            # Clean up failed download
+            if os.path.exists(video_tmp):
+                try:
+                    os.remove(video_tmp)
+                except:
+                    pass
             raise HTTPException(
                 status_code=500, 
                 detail=f"Error downloading video: {str(download_error)}"
@@ -908,9 +968,21 @@ async def get_video_by_id(
             
     except HTTPException:
         # Pass through HTTP exceptions we've already raised
+        # Ensure temp file is cleaned up
+        if os.path.exists(video_tmp):
+            try:
+                os.remove(video_tmp)
+            except:
+                pass
         raise
     except Exception as e:
         # Catch any other unexpected errors
+        # Ensure temp file is cleaned up
+        if os.path.exists(video_tmp):
+            try:
+                os.remove(video_tmp)
+            except:
+                pass
         print(f"Unexpected error in get_video_by_id for {video_id}: {str(e)}")
         raise HTTPException(
             status_code=500, 
@@ -966,13 +1038,18 @@ async def head_video_by_id(
 async def get_video_tts_by_id(
     video_tts_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ):
     # Kiểm tra xem video có tồn tại không
     video_tts_db = db.query(VIDEO_TTS).filter(VIDEO_TTS.video_tts_id == video_tts_id).first()
-    video_db = db.query(Video).filter(Video.video_id == video_tts_db.video_id).first()
     if not video_tts_db:
         raise HTTPException(status_code=404, detail="Video not found")
+    
+    video_db = db.query(Video).filter(Video.video_id == video_tts_db.video_id).first()
+    if not video_db:
+        raise HTTPException(status_code=404, detail="Original video not found")
+    
     if current_user.user_id != video_db.user_id:
         raise HTTPException(status_code=403, detail="User not authorized to access")
     
@@ -982,23 +1059,150 @@ async def get_video_tts_by_id(
     }
     for dir_path in temp_dirs.values():
         os.makedirs(dir_path, exist_ok=True)
+    
     # Extract filenames from URLs
     try:
         video_filename = os.path.basename(urllib.parse.urlparse(video_tts_db.video_tts_url).path)
+        s3_key = video_filename  # The key in S3 is typically the filename
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process file names: {str(e)}"
+            detail=f"Failed to process file path from URL: {str(e)}"
         )
-    # Define file paths
-    video_tmp = os.path.join(temp_dirs["video"], video_filename)
-    # Download video from S3
-    download_file_from_s3(video_tts_db.video_tts_url, settings.AWS_BUCKET_VIDEO_SUB, video_tmp)
-    return FileResponse(
-        path=video_tmp,
-        media_type="video/mp4",
-        filename=video_filename
-    )
+    
+    # Generate a unique temporary filename to avoid conflicts between concurrent requests
+    unique_request_id = str(uuid.uuid4())
+    video_tmp = os.path.join(temp_dirs["video"], f"{unique_request_id}_{video_filename}")
+    
+    try:
+        # Kiểm tra file tồn tại trên S3 trước khi tải xuống
+        s3 = get_s3_client()
+        try:
+            s3_object = s3.head_object(Bucket=settings.AWS_BUCKET_VIDEO_SUB, Key=s3_key)
+            
+            # Kiểm tra ETag từ client request để hỗ trợ caching
+            if request and "if-none-match" in request.headers:
+                client_etag = request.headers["if-none-match"].strip('"')
+                server_etag = s3_object.get("ETag", "").strip('"')
+                
+                if client_etag and server_etag and client_etag == server_etag:
+                    # Trả về 304 Not Modified nếu ETag khớp
+                    print(f"ETag match for video TTS {video_tts_id}: {client_etag}. Returning 304.")
+                    return Response(
+                        status_code=304,
+                        headers={
+                            "ETag": f'"{server_etag}"',
+                            "Cache-Control": "max-age=3600"
+                        }
+                    )
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "404" or error_code == "NoSuchKey":
+                # File not found in S3
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Video TTS file not found in storage: {video_filename}"
+                )
+            elif error_code == "403" or error_code == "AccessDenied":
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Access denied to video TTS file in storage"
+                )
+            else:
+                # Other S3 errors
+                print(f"S3 error checking video TTS {video_tts_id}, key {s3_key}: {str(e)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Error accessing video TTS in storage: {str(e)}"
+                )
+        
+        # Download video from S3
+        print(f"Downloading video TTS {video_tts_id} to temp file: {video_tmp}")
+        download_success = download_file_from_s3(
+            video_tts_db.video_tts_url, 
+            settings.AWS_BUCKET_VIDEO_SUB, 
+            video_tmp
+        )
+        
+        if not download_success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to download video from storage"
+            )
+            
+        if not os.path.exists(video_tmp) or os.path.getsize(video_tmp) == 0:
+            raise HTTPException(
+                status_code=500, 
+                detail="Downloaded video TTS file is empty or missing"
+            )
+        
+        file_size = os.path.getsize(video_tmp)
+        print(f"Downloaded video TTS size: {file_size} bytes")
+        
+        # Tạo ETag từ nội dung file hoặc sử dụng ETag từ S3
+        etag = s3_object.get("ETag", "").strip('"')
+        if not etag:
+            # Nếu không có ETag từ S3, tạo từ file size và modification time
+            file_stat = os.stat(video_tmp)
+            etag = f"{file_stat.st_size}-{file_stat.st_mtime}"
+        
+        # Set Cache-Control header to enable client-side caching
+        headers = {
+            "Cache-Control": "max-age=3600",  # Cache for 1 hour
+            "ETag": f'"{etag}"',  # Add ETag for cache validation
+            "Content-Type": "video/mp4",
+            "Content-Length": str(file_size),
+            "Content-Disposition": f'inline; filename="{video_filename}"',
+            "Access-Control-Allow-Origin": "*"  # Allow cross-origin access
+        }
+        
+        # SRT files are small, but still need some time for download to complete
+        async def delayed_cleanup(path):
+            try:
+                # Increase to 10 seconds to ensure client has sufficient time to download
+                await asyncio.sleep(10)
+                if os.path.exists(path):
+                    file_size = os.path.getsize(path)
+                    print(f"Removing temp video file: {path} (size: {file_size} bytes)")
+                    os.remove(path)
+                    print(f"Successfully removed temp video file: {path}")
+                else:
+                    print(f"Temp video file already removed or not found: {path}")
+            except Exception as e:
+                print(f"Error removing temp video file {path}: {e}")
+                # Log the exception details for better debugging
+                import traceback
+                print(traceback.format_exc())
+        
+        # Log the file size and other details before sending
+        print(f"Serving video file {video_tmp} ({os.path.getsize(video_tmp)} bytes) with headers: {headers}")
+        
+        return FileResponse(
+            path=video_tmp,
+            media_type="video/mp4",
+            filename=video_filename,
+            headers=headers,
+            background=BackgroundTask(delayed_cleanup, path=video_tmp)
+        )
+    except HTTPException:
+        # Clean up file if an exception occurs
+        if os.path.exists(video_tmp):
+            try:
+                os.remove(video_tmp)
+            except:
+                pass
+        raise
+    except Exception as e:
+        # Clean up file if an exception occurs
+        if os.path.exists(video_tmp):
+            try:
+                os.remove(video_tmp)
+            except:
+                pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to serve video: {str(e)}"
+        )
 
 @router.get("/videottses/{video_id}", response_model=None)
 async def get_videottses(
@@ -1124,7 +1328,8 @@ async def delete_video_by_id(
 async def get_srt_by_video_id(
     video_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ):
     # Kiểm tra xem video có tồn tại không
     video_db = db.query(Video).filter(Video.video_id == video_id).first()
@@ -1145,20 +1350,145 @@ async def get_srt_by_video_id(
     # Extract filenames from URLs
     try:
         srt_filename = os.path.basename(urllib.parse.urlparse(srt_db.srt_url).path)
+        s3_key = srt_filename  # The key in S3 is typically the filename
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process file names: {str(e)}"
+            detail=f"Failed to process file path from URL: {str(e)}"
         )
-    # Define file paths
-    srt_tmp = os.path.join(temp_dirs["srt"], srt_filename)
-    # Download video from S3
-    download_file_from_s3(srt_db.srt_url, settings.AWS_BUCKET_INPUT_SRT, srt_tmp)
-    return FileResponse(
-        path=srt_tmp,
-        media_type="application/x-subrip",
-        filename=srt_filename
-    )
+    
+    # Generate a unique temporary filename
+    unique_request_id = str(uuid.uuid4())
+    srt_tmp = os.path.join(temp_dirs["srt"], f"{unique_request_id}_{srt_filename}")
+    
+    try:
+        # Kiểm tra file tồn tại trên S3 trước khi tải xuống
+        s3 = get_s3_client()
+        try:
+            s3_object = s3.head_object(Bucket=settings.AWS_BUCKET_INPUT_SRT, Key=s3_key)
+            
+            # Kiểm tra ETag từ client request để hỗ trợ caching
+            if request and "if-none-match" in request.headers:
+                client_etag = request.headers["if-none-match"].strip('"')
+                server_etag = s3_object.get("ETag", "").strip('"')
+                
+                if client_etag and server_etag and client_etag == server_etag:
+                    # Trả về 304 Not Modified nếu ETag khớp
+                    print(f"ETag match for SRT {video_id}: {client_etag}. Returning 304.")
+                    return Response(
+                        status_code=304,
+                        headers={
+                            "ETag": f'"{server_etag}"',
+                            "Cache-Control": "max-age=3600"
+                        }
+                    )
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "404" or error_code == "NoSuchKey":
+                # File not found in S3
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"SRT file not found in storage: {srt_filename}"
+                )
+            elif error_code == "403" or error_code == "AccessDenied":
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Access denied to SRT file in storage"
+                )
+            else:
+                # Other S3 errors
+                print(f"S3 error checking SRT for video {video_id}, key {s3_key}: {str(e)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Error accessing SRT in storage: {str(e)}"
+                )
+        
+        # Download SRT from S3
+        print(f"Downloading SRT for video {video_id} to temp file: {srt_tmp}")
+        download_success = download_file_from_s3(
+            srt_db.srt_url, 
+            settings.AWS_BUCKET_INPUT_SRT, 
+            srt_tmp
+        )
+        
+        if not download_success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to download SRT file from storage"
+            )
+            
+        if not os.path.exists(srt_tmp) or os.path.getsize(srt_tmp) == 0:
+            raise HTTPException(
+                status_code=500, 
+                detail="Downloaded SRT file is empty or missing"
+            )
+        
+        file_size = os.path.getsize(srt_tmp)
+        print(f"Downloaded SRT size: {file_size} bytes")
+        
+        # Tạo ETag từ nội dung file hoặc sử dụng ETag từ S3
+        etag = s3_object.get("ETag", "").strip('"')
+        if not etag:
+            # Nếu không có ETag từ S3, tạo từ file size và modification time
+            file_stat = os.stat(srt_tmp)
+            etag = f"{file_stat.st_size}-{file_stat.st_mtime}"
+        
+        # Set Cache-Control header
+        headers = {
+            "Cache-Control": "max-age=3600",  # Cache for 1 hour
+            "ETag": f'"{etag}"',
+            "Content-Type": "application/x-subrip",
+            "Content-Length": str(file_size),
+            "Content-Disposition": f'attachment; filename="{srt_filename}"'
+        }
+        
+        # SRT files are small, but still need some time for download to complete
+        async def delayed_cleanup(path):
+            try:
+                # Increase to 10 seconds to ensure client has sufficient time to download
+                await asyncio.sleep(10)
+                if os.path.exists(path):
+                    file_size = os.path.getsize(path)
+                    print(f"Removing temp SRT file: {path} (size: {file_size} bytes)")
+                    os.remove(path)
+                    print(f"Successfully removed temp SRT file: {path}")
+                else:
+                    print(f"Temp SRT file already removed or not found: {path}")
+            except Exception as e:
+                print(f"Error removing temp SRT file {path}: {e}")
+                # Log the exception details for better debugging
+                import traceback
+                print(traceback.format_exc())
+        
+        # Log the file size and other details before sending
+        print(f"Serving SRT file {srt_tmp} ({os.path.getsize(srt_tmp)} bytes) with headers: {headers}")
+        
+        return FileResponse(
+            path=srt_tmp,
+            media_type="application/x-subrip",
+            filename=srt_filename,
+            headers=headers,
+            background=BackgroundTask(delayed_cleanup, path=srt_tmp)
+        )
+    except HTTPException:
+        # Clean up file if an exception occurs
+        if os.path.exists(srt_tmp):
+            try:
+                os.remove(srt_tmp)
+            except:
+                pass
+        raise
+    except Exception as e:
+        # Clean up file if an exception occurs
+        if os.path.exists(srt_tmp):
+            try:
+                os.remove(srt_tmp)
+            except:
+                pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to serve SRT file: {str(e)}"
+        )
 
 
 # pass
@@ -1166,7 +1496,8 @@ async def get_srt_by_video_id(
 async def get_srt_trans_by_video_id(
     video_id: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    request: Request = None
 ):
     # Kiểm tra xem video có tồn tại không
     video_db = db.query(Video).filter(Video.video_id == video_id).first()
@@ -1187,23 +1518,148 @@ async def get_srt_trans_by_video_id(
     # Extract filenames from URLs
     try:
         srt_sub_filename = os.path.basename(urllib.parse.urlparse(srt_db.srt_url_sub).path)
+        s3_key = srt_sub_filename  # The key in S3 is typically the filename
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to process file names: {str(e)}"
+            detail=f"Failed to process file path from URL: {str(e)}"
         )
-    # Define file paths
-    srt_sub_tmp = os.path.join(temp_dirs["srt"], srt_sub_filename)
-    # Download video from S3
-    download_file_from_s3(srt_db.srt_url_sub, settings.AWS_BUCKET_INPUT_SRT, srt_sub_tmp)
-    return FileResponse(
-        path=srt_sub_tmp,
-        media_type="application/x-subrip",
-        filename=srt_sub_filename
-    )
+    
+    # Generate a unique temporary filename
+    unique_request_id = str(uuid.uuid4())
+    srt_sub_tmp = os.path.join(temp_dirs["srt"], f"{unique_request_id}_{srt_sub_filename}")
+    
+    try:
+        # Kiểm tra file tồn tại trên S3 trước khi tải xuống
+        s3 = get_s3_client()
+        try:
+            s3_object = s3.head_object(Bucket=settings.AWS_BUCKET_INPUT_SRT, Key=s3_key)
+            
+            # Kiểm tra ETag từ client request để hỗ trợ caching
+            if request and "if-none-match" in request.headers:
+                client_etag = request.headers["if-none-match"].strip('"')
+                server_etag = s3_object.get("ETag", "").strip('"')
+                
+                if client_etag and server_etag and client_etag == server_etag:
+                    # Trả về 304 Not Modified nếu ETag khớp
+                    print(f"ETag match for translated SRT {video_id}: {client_etag}. Returning 304.")
+                    return Response(
+                        status_code=304,
+                        headers={
+                            "ETag": f'"{server_etag}"',
+                            "Cache-Control": "max-age=3600"
+                        }
+                    )
+        except ClientError as e:
+            error_code = e.response.get("Error", {}).get("Code")
+            if error_code == "404" or error_code == "NoSuchKey":
+                # File not found in S3
+                raise HTTPException(
+                    status_code=404, 
+                    detail=f"Translated SRT file not found in storage: {srt_sub_filename}"
+                )
+            elif error_code == "403" or error_code == "AccessDenied":
+                raise HTTPException(
+                    status_code=403, 
+                    detail="Access denied to translated SRT file in storage"
+                )
+            else:
+                # Other S3 errors
+                print(f"S3 error checking translated SRT for video {video_id}, key {s3_key}: {str(e)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Error accessing translated SRT in storage: {str(e)}"
+                )
+        
+        # Download SRT from S3
+        print(f"Downloading translated SRT for video {video_id} to temp file: {srt_sub_tmp}")
+        download_success = download_file_from_s3(
+            srt_db.srt_url_sub, 
+            settings.AWS_BUCKET_INPUT_SRT, 
+            srt_sub_tmp
+        )
+        
+        if not download_success:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to download translated SRT file from storage"
+            )
+            
+        if not os.path.exists(srt_sub_tmp) or os.path.getsize(srt_sub_tmp) == 0:
+            raise HTTPException(
+                status_code=500, 
+                detail="Downloaded translated SRT file is empty or missing"
+            )
+        
+        file_size = os.path.getsize(srt_sub_tmp)
+        print(f"Downloaded translated SRT size: {file_size} bytes")
+        
+        # Tạo ETag từ nội dung file hoặc sử dụng ETag từ S3
+        etag = s3_object.get("ETag", "").strip('"')
+        if not etag:
+            # Nếu không có ETag từ S3, tạo từ file size và modification time
+            file_stat = os.stat(srt_sub_tmp)
+            etag = f"{file_stat.st_size}-{file_stat.st_mtime}"
+        
+        # Set Cache-Control header
+        headers = {
+            "Cache-Control": "max-age=3600",  # Cache for 1 hour
+            "ETag": f'"{etag}"',
+            "Content-Type": "application/x-subrip",
+            "Content-Length": str(file_size),
+            "Content-Disposition": f'attachment; filename="{srt_sub_filename}"'
+        }
+        
+        # SRT files are small, but still need some time for download to complete
+        async def delayed_cleanup(path):
+            try:
+                # Increase to 10 seconds to ensure client has sufficient time to download
+                await asyncio.sleep(10)
+                if os.path.exists(path):
+                    file_size = os.path.getsize(path)
+                    print(f"Removing temp SRT file: {path} (size: {file_size} bytes)")
+                    os.remove(path)
+                    print(f"Successfully removed temp SRT file: {path}")
+                else:
+                    print(f"Temp SRT file already removed or not found: {path}")
+            except Exception as e:
+                print(f"Error removing temp SRT file {path}: {e}")
+                # Log the exception details for better debugging
+                import traceback
+                print(traceback.format_exc())
+        
+        # Log the file size and other details before sending
+        print(f"Serving SRT file {srt_sub_tmp} ({os.path.getsize(srt_sub_tmp)} bytes) with headers: {headers}")
+        
+        return FileResponse(
+            path=srt_sub_tmp,
+            media_type="application/x-subrip",
+            filename=srt_sub_filename,
+            headers=headers,
+            background=BackgroundTask(delayed_cleanup, path=srt_sub_tmp)
+        )
+    except HTTPException:
+        # Clean up file if an exception occurs
+        if os.path.exists(srt_sub_tmp):
+            try:
+                os.remove(srt_sub_tmp)
+            except:
+                pass
+        raise
+    except Exception as e:
+        # Clean up file if an exception occurs
+        if os.path.exists(srt_sub_tmp):
+            try:
+                os.remove(srt_sub_tmp)
+            except:
+                pass
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to serve translated SRT file: {str(e)}"
+        )
 
 # New endpoint to get a pre-signed URL for direct video access
-@router.get("/api/videos/{video_id}")
+@router.get("/{video_id}/presigned")
 async def get_video_url(
     video_id: str,
     db: Session = Depends(get_db),
@@ -1281,6 +1737,7 @@ async def get_video_url(
                     detail="Access denied to video file in storage"
                 )
             else:
+                # Other S3 errors
                 print(f"S3 error checking video {video_id}, key {s3_key}: {str(e)}")
                 raise HTTPException(
                     status_code=500, 

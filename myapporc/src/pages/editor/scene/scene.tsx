@@ -1,4 +1,4 @@
-import { Player } from "../player";
+import EnhancedPlayer from "../player/enhanced-player";
 import Viewer from "@interactify/infinite-viewer";
 import { useRef } from "react";
 import useStore from "@/pages/editor/store/use-store";
@@ -10,8 +10,12 @@ import { SceneInteractions } from "./interactions";
 
 export default function Scene({
   stateManager,
+  isPlayerLocked,
+  onTogglePlayerLock,
 }: {
   stateManager: StateManager;
+  isPlayerLocked?: boolean;
+  onTogglePlayerLock?: () => void;
 }) {
   const viewerRef = useRef<Viewer>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -40,7 +44,10 @@ export default function Scene({
         onPinch={handlePinch}
       >
         <Board size={size}>
-          <Player />
+          <EnhancedPlayer 
+            isLocked={isPlayerLocked}
+            onToggleLock={onTogglePlayerLock}
+          />
           <SceneInteractions
             stateManager={stateManager}
             viewerRef={viewerRef}

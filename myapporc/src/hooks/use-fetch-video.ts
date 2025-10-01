@@ -1,9 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import useAuthStore from '@/store/use-auth-store';
 import useVideoStore, { VideoItem } from '@/store/use-video-store';
-
-// API configuration - use the same base URL as in other hooks
-const API_BASE_URL = 'http://localhost:8000';
 
 interface UseFetchVideoResult {
   videoData: VideoItem | null;
@@ -27,6 +24,8 @@ export const useFetchVideo = (videoId: string | null): UseFetchVideoResult => {
     videoError, 
     fetchVideos 
   } = useVideoStore();
+  const isMounted = useRef(true);
+  const isProcessing = useRef(false);
 
   useEffect(() => {
     // Reset states when videoId changes
@@ -34,18 +33,19 @@ export const useFetchVideo = (videoId: string | null): UseFetchVideoResult => {
     setError(null);
     
     const getVideoData = async () => {
-      if (!videoId || !accessToken) {
+      if (!videoId || !accessToken || isProcessing.current) {
         return;
       }
       
       try {
+        isProcessing.current = true;
         setLoading(true);
         console.log(`Tìm video với ID: ${videoId}`);
         
         // Tải danh sách videos nếu chưa có
         if (videos.length === 0 && !isLoadingVideos) {
           console.log('Danh sách video trống, tải từ API...');
-          await fetchVideos(accessToken);
+          await fetchVideos(accessToken, false, 'useFetchVideo-empty');
           
           // Nếu có lỗi khi tải danh sách video
           if (videoError) {
@@ -54,7 +54,7 @@ export const useFetchVideo = (videoId: string | null): UseFetchVideoResult => {
         }
 
         // Tạo URL trực tiếp đến file video với token xác thực
-        const videoUrl = `${API_BASE_URL}/api/v1/videos/${videoId}`;
+        const videoUrl = `http://localhost:8000/api/v1/videos/${videoId}`;
         
         // Tìm video trong danh sách đã lưu trong store
         const videoInfo = videos.find((v) => v.video_id === videoId);
@@ -67,7 +67,7 @@ export const useFetchVideo = (videoId: string | null): UseFetchVideoResult => {
               'Authorization': `Bearer ${accessToken}`
             }
           });
-          console.log('checkResponse', checkResponse);
+          
           if (!checkResponse.ok) {
             if (checkResponse.status === 401) {
               throw new Error('Unauthorized: Please log in again');
@@ -77,7 +77,7 @@ export const useFetchVideo = (videoId: string | null): UseFetchVideoResult => {
           
           // Nếu video không có trong danh sách nhưng vẫn tồn tại, load lại danh sách
           console.log('Video không tìm thấy trong danh sách, tải lại danh sách videos...');
-          await fetchVideos(accessToken, true); // Force refresh
+          await fetchVideos(accessToken, true, 'useFetchVideo-refresh'); // Force refresh
           
           // Tìm lại video sau khi tải mới
           const refreshedVideo = useVideoStore.getState().videos.find(v => v.video_id === videoId);
@@ -87,27 +87,40 @@ export const useFetchVideo = (videoId: string | null): UseFetchVideoResult => {
           }
           
           // Cập nhật dữ liệu video với URL trực tiếp
-          setVideoData({
-            ...refreshedVideo,
-            file_url: videoUrl
-          });
+          if (isMounted.current) {
+            setVideoData({
+              ...refreshedVideo,
+              file_url: videoUrl
+            });
+          }
         } else {
           // Cập nhật dữ liệu video với URL trực tiếp
-          setVideoData({
-            ...videoInfo,
-            file_url: videoUrl
-          });
+          if (isMounted.current) {
+            setVideoData({
+              ...videoInfo,
+              file_url: videoUrl
+            });
+          }
         }
         
       } catch (error) {
         console.error('Error fetching video data:', error);
-        setError(error instanceof Error ? error.message : 'Failed to fetch video data');
+        if (isMounted.current) {
+          setError(error instanceof Error ? error.message : 'Failed to fetch video data');
+        }
       } finally {
-        setLoading(false);
+        if (isMounted.current) {
+          setLoading(false);
+        }
+        isProcessing.current = false;
       }
     };
 
     getVideoData();
+    
+    return () => {
+      isMounted.current = false;
+    };
   }, [videoId, accessToken, videos, isLoadingVideos, videoError, fetchVideos]);
 
   return { videoData, loading, error };

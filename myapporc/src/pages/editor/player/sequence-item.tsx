@@ -25,6 +25,7 @@ import useVideoStore from "@/store/use-video-store";
 import { useFetchVideo } from "@/hooks/use-fetch-video";
 import { useAuthenticatedVideo } from "@/hooks/use-authenticated-video";
 import useAuthStore from "@/store/use-auth-store";
+import { useMemo, useCallback, memo } from "react";
 
 interface SequenceItemOptions {
   handleTextChange?: (id: string, text: string) => void;
@@ -98,6 +99,127 @@ const CaptionWord = ({
     </WordSpan>
   );
 };
+
+// Memoized video component to prevent unnecessary re-renders
+const VideoSequenceItem = memo(({ item, options }: { item: IVideo, options: SequenceItemOptions }) => {
+  const { fps, zIndex } = options;
+  const { details, animations } = item;
+  const { animationIn, animationOut } = getAnimations(animations!, item);
+  const playbackRate = item.playbackRate || 1;
+  const { isMuted } = useStore();
+  const { from, durationInFrames } = calculateFrames(
+    {
+      from: item.display.from / playbackRate,
+      to: item.display.to / playbackRate,
+    },
+    fps,
+  );
+  const crop = details.crop || {
+    x: 0,
+    y: 0,
+    width: item.details.width,
+    height: item.details.height,
+  };
+
+  // Determine if we should load authenticated video
+  const shouldLoadAuthVideo = details.src && !details.src.startsWith('blob:') && !details.src.startsWith('http');
+  
+  // Get the selected video ID from the store
+  const { selectedVideoId } = useVideoStore();
+  
+  // Use authenticated video hook only when needed
+  const { blobUrl, loading: isLoadingVideo } = shouldLoadAuthVideo && selectedVideoId ? 
+    useAuthenticatedVideo(selectedVideoId) : 
+    { blobUrl: null, loading: false };
+  
+  // Determine final video source
+  const videoSrc = useMemo(() => {
+    if (shouldLoadAuthVideo && blobUrl) {
+      return blobUrl;
+    }
+    return details.src;
+  }, [shouldLoadAuthVideo, blobUrl, details.src]);
+
+  // Memoize the container and media styles to prevent recalculation
+  const containerStyles = useMemo(
+    () => calculateContainerStyles(details, crop),
+    [details, crop]
+  );
+
+  const animationContainerStyles = useMemo(
+    () => calculateContainerStyles(details, crop, { overflow: "hidden" }),
+    [details, crop]
+  );
+
+  const mediaStyles = useMemo(
+    () => calculateMediaStyles(details, crop, { preserveAspectRatio: true }),
+    [details, crop]
+  );
+
+  // Stable key that includes essential video properties
+  const stableKey = useMemo(
+    () => `${item.id}-${videoSrc || 'no-src'}-${playbackRate}-${isMuted}`,
+    [item.id, videoSrc, playbackRate, isMuted]
+  );
+
+  return (
+    <Sequence
+      key={stableKey}
+      from={from}
+      durationInFrames={durationInFrames}
+      style={{ pointerEvents: "none", zIndex }}
+    >
+      <AbsoluteFill
+        data-track-item="transition-element"
+        className={`designcombo-scene-item id-${item.id} designcombo-scene-item-type-${item.type}`}
+        style={containerStyles}
+      >
+        {/* animation layer */}
+        <Animated
+          style={animationContainerStyles}
+          animationIn={animationIn}
+          animationOut={animationOut}
+          durationInFrames={durationInFrames}
+        >
+          <div style={mediaStyles}>
+            {!isLoadingVideo && videoSrc ? (
+              <OffthreadVideo
+                startFrom={(item.trim?.from! / 1000) * fps}
+                endAt={(item.trim?.to! / 1000) * fps}
+                playbackRate={playbackRate}
+                src={videoSrc}
+                volume={isMuted ? 0 : (details.volume || 0) / 100}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "contain",
+                  objectPosition: "center",
+                }}
+              />
+            ) : (
+              <div
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  backgroundColor: "#1a1a1a",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  color: "#666",
+                  fontSize: "14px",
+                }}
+              >
+                {isLoadingVideo ? "Loading..." : "Video"}
+              </div>
+            )}
+          </div>
+        </Animated>
+      </AbsoluteFill>
+    </Sequence>
+  );
+});
+
+VideoSequenceItem.displayName = 'VideoSequenceItem';
 
 export const SequenceItem: Record<
   string,
@@ -228,163 +350,13 @@ export const SequenceItem: Record<
     );
   },
   video: (item, options: SequenceItemOptions) => {
-    const { fps, zIndex } = options;
-    const { details, animations } = item as IVideo;
-    const { animationIn, animationOut } = getAnimations(animations!, item);
-    const playbackRate = item.playbackRate || 1;
-    const { from, durationInFrames } = calculateFrames(
-      {
-        from: item.display.from / playbackRate,
-        to: item.display.to / playbackRate,
-      },
-      fps,
-    );
-    const crop = details.crop || {
-      x: 0,
-      y: 0,
-      width: item.details.width,
-      height: item.details.height,
-    };
-
-    // Get the selected video ID from the store
-    const { selectedVideoId } = useVideoStore();
-    
-    // Use our custom hook to fetch the video data
-    const { videoData } = useFetchVideo(selectedVideoId);
-    
-    // Use our authenticated video hook to get a blob URL for the video
-    const { blobUrl, loading, error } = useAuthenticatedVideo(selectedVideoId);
-
-    // Determine the video source to use
-    let videoSrc = details.src;
-    
-    // Use blob URL if available 
-    if (blobUrl) {
-      videoSrc = blobUrl;
-      console.log(`Using blob URL for video: ${selectedVideoId}`);
-    }
-    // Fallback to default source if no blob URL
-    else if (!loading && !error) {
-      console.log(`Using default video source: ${videoSrc}`);
-    }
-    // If there's an error or it's still loading, we'll handle it in the render below
-
-    return (
-      <Sequence
-        key={item.id}
-        from={from}
-        durationInFrames={durationInFrames}
-        style={{ pointerEvents: "none", zIndex }}
-      >
-        <AbsoluteFill
-          data-track-item="transition-element"
-          className={`designcombo-scene-item id-${item.id} designcombo-scene-item-type-${item.type}`}
-          style={calculateContainerStyles(details, crop)}
-        >
-          {/* animation layer */}
-          <Animated
-            style={calculateContainerStyles(details, crop, {
-              overflow: "hidden",
-            })}
-            animationIn={animationIn}
-            animationOut={animationOut}
-            durationInFrames={durationInFrames}
-          >
-            <div style={calculateMediaStyles(details, crop)}>
-              {loading ? (
-                <div style={{ 
-                  display: 'flex', 
-                  flexDirection: 'column',
-                  justifyContent: 'center', 
-                  alignItems: 'center', 
-                  width: '100%', 
-                  height: '100%', 
-                  backgroundColor: 'rgba(0, 0, 0, 0.8)',
-                  color: '#fff',
-                  fontSize: '14px'
-                }}>
-                  <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-blue-500 mb-3"></div>
-                  <div>Loading video...</div>
-                  <div style={{ fontSize: '12px', color: '#aaa', marginTop: '5px' }}>
-                    {selectedVideoId ? `ID: ${selectedVideoId.slice(0, 8)}...` : 'No video ID available'}
-                  </div>
-                </div>
-              ) : error ? (
-                <div style={{ 
-                  display: 'flex', 
-                  flexDirection: 'column',
-                  justifyContent: 'center', 
-                  alignItems: 'center', 
-                  width: '100%', 
-                  height: '100%', 
-                  backgroundColor: '#000',
-                  color: '#eee',
-                  fontSize: '14px',
-                  padding: '20px',
-                  textAlign: 'center'
-                }}>
-                  <div style={{ fontSize: '16px', color: '#ff6b6b', marginBottom: '10px' }}>Could not load video</div>
-                  {error.includes("404") ? (
-                    <div style={{ marginTop: '10px', fontSize: '12px' }}>
-                      The requested video was not found on the server.
-                      <br/>Please check if this video still exists.
-                    </div>
-                  ) : error.includes("401") || error.includes("auth") ? (
-                    <div style={{ marginTop: '10px', fontSize: '12px' }}>
-                      Authentication error. Please try logging in again.
-                    </div>
-                  ) : (
-                    <div style={{ marginTop: '10px', fontSize: '12px' }}>
-                      {error}
-                    </div>
-                  )}
-                  <div style={{ 
-                    marginTop: '15px', 
-                    fontSize: '12px', 
-                    color: '#aaa',
-                    padding: '5px 10px',
-                    border: '1px solid #333',
-                    borderRadius: '4px'
-                  }}>
-                    Using placeholder video
-                  </div>
-                  <OffthreadVideo
-                    startFrom={(item.trim?.from! / 1000) * fps}
-                    endAt={(item.trim?.to! / 1000) * fps}
-                    playbackRate={playbackRate}
-                    src={details.src}
-                    volume={details.volume || 0 / 100}
-                  />
-                </div>
-              ) : (
-                blobUrl ? (
-                  <OffthreadVideo
-                    startFrom={(item.trim?.from! / 1000) * fps}
-                    endAt={(item.trim?.to! / 1000) * fps}
-                    playbackRate={playbackRate}
-                    src={blobUrl}
-                    volume={details.volume || 0 / 100}
-                  />
-                ) : (
-                  <OffthreadVideo
-                    startFrom={(item.trim?.from! / 1000) * fps}
-                    endAt={(item.trim?.to! / 1000) * fps}
-                    playbackRate={playbackRate}
-                    src={videoSrc}
-                    volume={details.volume || 0 / 100}
-                  />
-                )
-              )}
-            </div>
-          </Animated>
-        </AbsoluteFill>
-      </Sequence>
-    );
+    return <VideoSequenceItem item={item as IVideo} options={options} />;
   },
   audio: (item, options: SequenceItemOptions) => {
     const { fps, zIndex } = options;
     const { details } = item as IAudio;
     const playbackRate = item.playbackRate || 1;
+    const { isMuted } = useStore();
     const { from, durationInFrames } = calculateFrames(
       {
         from: item.display.from / playbackRate,
@@ -409,7 +381,7 @@ export const SequenceItem: Record<
             endAt={(item.trim?.to! / 1000) * fps}
             playbackRate={playbackRate}
             src={details.src}
-            volume={details.volume! / 100}
+            volume={isMuted ? 0 : details.volume! / 100}
           />
         </AbsoluteFill>
       </Sequence>

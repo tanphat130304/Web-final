@@ -1,6 +1,6 @@
 import useStore from "@/pages/editor/store/use-store";
 import { SequenceItem } from "./sequence-item";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useMemo, memo, useCallback } from "react";
 import { dispatch, filter, subject } from "@designcombo/events";
 import {
   EDIT_OBJECT,
@@ -11,6 +11,36 @@ import { merge } from "lodash";
 import { groupTrackItems } from "../utils/track-items";
 import { calculateTextHeight } from "../utils/text";
 import { Transitions } from "./presentations";
+
+// Memoized sequence item renderer to prevent unnecessary re-renders
+const MemoizedSequenceItem = memo(({ 
+  item, 
+  fps, 
+  handleTextChange, 
+  onTextBlur, 
+  editableTextId 
+}: {
+  item: any;
+  fps: number;
+  handleTextChange: (id: string, text: string) => void;
+  onTextBlur: (id: string, text: string) => void;
+  editableTextId: string | null;
+}) => {
+  const renderer = SequenceItem[item.type];
+  if (!renderer) {
+    console.warn(`No renderer found for item type: ${item.type}`);
+    return null;
+  }
+  
+  return renderer(item, {
+    fps,
+    handleTextChange,
+    onTextBlur,
+    editableTextId,
+  });
+});
+
+MemoizedSequenceItem.displayName = 'MemoizedSequenceItem';
 
 const Composition = () => {
   const [editableTextId, setEditableTextId] = useState<string | null>(null);
@@ -23,14 +53,24 @@ const Composition = () => {
     size,
     transitionsMap,
   } = useStore();
-  const mergedTrackItemsDeatilsMap = merge(trackItemsMap, trackItemDetailsMap);
-  const groupedItems = groupTrackItems({
-    trackItemIds,
-    transitionsMap,
-    trackItemsMap: mergedTrackItemsDeatilsMap,
-  });
 
-  const handleTextChange = (id: string, _: string) => {
+  // Memoize the merged track items map to prevent unnecessary recalculations
+  const mergedTrackItemsDeatilsMap = useMemo(
+    () => merge(trackItemsMap, trackItemDetailsMap),
+    [trackItemsMap, trackItemDetailsMap]
+  );
+
+  // Memoize the grouped items to prevent unnecessary recalculations
+  const groupedItems = useMemo(
+    () => groupTrackItems({
+      trackItemIds,
+      transitionsMap,
+      trackItemsMap: mergedTrackItemsDeatilsMap,
+    }),
+    [trackItemIds, transitionsMap, mergedTrackItemsDeatilsMap]
+  );
+
+  const handleTextChange = useCallback((id: string, _: string) => {
     const elRef = document.querySelector(`.id-${id}`) as HTMLDivElement;
     const textDiv = elRef.firstElementChild?.firstElementChild
       ?.firstElementChild as HTMLDivElement;
@@ -61,9 +101,9 @@ const Composition = () => {
     elRef.style.height = `${newHeight}px`;
     sceneMoveableRef?.current?.moveable.updateRect();
     sceneMoveableRef?.current?.moveable.forceUpdate();
-  };
+  }, [sceneMoveableRef]);
 
-  const onTextBlur = (id: string, _: string) => {
+  const onTextBlur = useCallback((id: string, _: string) => {
     const elRef = document.querySelector(`.id-${id}`) as HTMLDivElement;
     const textDiv = elRef.firstElementChild?.firstElementChild
       ?.firstElementChild as HTMLDivElement;
@@ -99,7 +139,7 @@ const Composition = () => {
         },
       },
     });
-  };
+  }, []);
 
   //   handle track and track item events - updates
   useEffect(() => {
@@ -140,24 +180,31 @@ const Composition = () => {
       }
     });
     return () => subscription.unsubscribe();
-  }, [editableTextId]);
+  }, [editableTextId, trackItemIds]);
 
-  return (
-    <>
-      {groupedItems.map((group) => {
-        if (group.length === 1) {
-          const item = mergedTrackItemsDeatilsMap[group[0].id];
-          return SequenceItem[item.type](item, {
-            fps,
-            handleTextChange,
-            onTextBlur,
-            editableTextId,
-          });
-        }
-        return null;
-      })}
-    </>
-  );
+  // Memoize the rendered items to prevent unnecessary re-renders
+  const renderedItems = useMemo(() => {
+    return groupedItems.map((group, index) => {
+      if (group.length === 1) {
+        const item = mergedTrackItemsDeatilsMap[group[0].id];
+        if (!item) return null;
+        
+        return (
+          <MemoizedSequenceItem
+            key={`${item.id}-${item.type}-${index}`}
+            item={item}
+            fps={fps}
+            handleTextChange={handleTextChange}
+            onTextBlur={onTextBlur}
+            editableTextId={editableTextId}
+          />
+        );
+      }
+      return null;
+    }).filter(Boolean);
+  }, [groupedItems, mergedTrackItemsDeatilsMap, fps, handleTextChange, onTextBlur, editableTextId]);
+
+  return <>{renderedItems}</>;
 };
 
-export default Composition;
+export default memo(Composition);

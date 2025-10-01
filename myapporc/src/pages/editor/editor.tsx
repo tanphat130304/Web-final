@@ -17,10 +17,11 @@ import {
 import { ImperativePanelHandle } from "react-resizable-panels";
 import { dispatch } from "@designcombo/events";
 import { createData } from "./data";
-import SubtitleDisplay from "@/components/SubtitleDisplay";
 import useVideoStore from "@/store/use-video-store";
 import { useFetchVideo } from "@/hooks/use-fetch-video";
 import { useAuthenticatedVideo } from "@/hooks/use-authenticated-video";
+import { useVideoCache } from "@/hooks/use-video-cache";
+import KeyboardShortcuts from "@/components/KeyboardShortcuts";
 
 const stateManager = new StateManager({
     size: {
@@ -35,135 +36,136 @@ const stateManager = new StateManager({
         segments: 5,
     },
 });
-// Dữ liệu phụ đề
-const subtitles = [
-    { id: 0, original: "Nội dung gốc 0", translated: "Nội dung dịch 0" },
-    { id: 1, original: "Nội dung gốc 1", translated: "Nội dung dịch 1" },
-    { id: 2, original: "Nội dung gốc 2", translated: "Nội dung dịch 2" },
-    { id: 3, original: "Nội dung gốc 3", translated: "Nội dung dịch 3" },
 
-  ];
-  
-const App = () => {
+export default function Editor() {
+    const store = useStore();
     const timelinePanelRef = useRef<ImperativePanelHandle>(null);
-    const { timeline, playerRef } = useStore();
-    const { selectedVideoId } = useVideoStore();
-    const { videoData } = useFetchVideo(selectedVideoId);
-    const { blobUrl } = useAuthenticatedVideo(selectedVideoId);
-    const [isDataLoaded, setIsDataLoaded] = useState(false);
+    const [timelineHeight, setTimelineHeight] = useState(30);
+    const [isTimelineLocked, setIsTimelineLocked] = useState(false);
+    const [isPlayerLocked, setIsPlayerLocked] = useState(false);
+    const videoStore = useVideoStore();
+    
+    // Video management hooks
+    useFetchVideo();
+    useAuthenticatedVideo();
+    useVideoCache(); // Restore video cache on app load
+
+    // Xử lý sự kiện thay đổi kích thước timeline
+    const handleTimelineResize = (size: number) => {
+        setTimelineHeight(size);
+    };
+
+    // Toggle timeline lock function
+    const toggleTimelineLock = () => {
+        setIsTimelineLocked(!isTimelineLocked);
+    };
+
+    // Toggle player lock function
+    const togglePlayerLock = () => {
+        setIsPlayerLocked(!isPlayerLocked);
+    };
 
     useTimelineEvents();
 
     useEffect(() => {
         const loadData = async () => {
-            if (!timeline) return;
-            
             try {
-                console.log("Loading editor data...");
-                
-                let dynamicData;
-                
-                if (selectedVideoId && (videoData || blobUrl)) {
-                    // Sử dụng thông tin video từ API
-                    console.log("Using video data from API:", selectedVideoId);
-                    const videoUrl = blobUrl || videoData?.file_url;
-                    
-                    if (videoUrl) {
-                        dynamicData = await createData(videoUrl, videoData);
-                        console.log("Dynamic data generated:", dynamicData.trackItemsMap.RZUICjMxa7r3tM8K.duration);
-                    } else {
-                        console.warn("Missing video URL, using default sample video");
-                        dynamicData = await createData("", null);
-                    }
-                } else {
-                    // Sử dụng dữ liệu mẫu
-                    console.log("Using default sample video");
-                    dynamicData = await createData("", null);
-                }
-                
+                const data = await createData();
                 dispatch(DESIGN_LOAD, {
-                    payload: dynamicData,
+                    payload: data,
                 });
-                setIsDataLoaded(true);
             } catch (error) {
                 console.error("Error loading editor data:", error);
-                // Fallback to create data with default video
-                try {
-                    const defaultData = await createData("", null);
-                    dispatch(DESIGN_LOAD, {
-                        payload: defaultData,
-                    });
-                } catch (fallbackError) {
-                    console.error("Even default data failed to load:", fallbackError);
-                }
-                setIsDataLoaded(true);
             }
         };
         
         loadData();
-    }, [timeline, selectedVideoId, videoData, blobUrl]);
-
-    useEffect(() => {
-        const screenHeight = window.innerHeight;
-        const desiredHeight = 300;
-        const percentage = (desiredHeight / screenHeight) * 100;
-        timelinePanelRef.current?.resize(percentage);
     }, []);
 
-    const handleTimelineResize = () => {
-        const timelineContainer = document.getElementById("timeline-container");
-        if (!timelineContainer) return;
-        timeline?.resize(
-            {
-                height: timelineContainer.clientHeight - 90,
-                width: timelineContainer.clientWidth - 40,
-            },
-            {
-                force: true,
-            }
-        );
-    };
-
+    // Global keyboard shortcuts
     useEffect(() => {
-        const onResize = () => handleTimelineResize();
-        window.addEventListener("resize", onResize);
-        return () => window.removeEventListener("resize", onResize);
-    }, [timeline]);
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Show shortcuts on ? key
+            if (e.key === '?' || (e.shiftKey && e.key === '/')) {
+                e.preventDefault();
+                // Keyboard shortcuts component handles its own visibility
+            }
+            
+            // Timeline lock toggle with L key
+            if (e.key === 'l' || e.key === 'L') {
+                e.preventDefault();
+                toggleTimelineLock();
+            }
+            
+            // Player lock toggle with P key (only when not in fullscreen or focused on player)
+            if ((e.key === 'p' || e.key === 'P') && !document.fullscreenElement) {
+                e.preventDefault();
+                togglePlayerLock();
+            }
+            
+            // Full screen toggle with F key
+            if (e.key === 'f' || e.key === 'F') {
+                e.preventDefault();
+                if (document.fullscreenElement) {
+                    document.exitFullscreen().catch(console.error);
+                } else {
+                    document.documentElement.requestFullscreen().catch(console.error);
+                }
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [isTimelineLocked, isPlayerLocked]);
 
     return (
-        <ResizablePanelGroup direction="horizontal" style={{ height: "100vh" }}>
-            {/* Left panel: chứa Navbar, MenuList, MenuItem, ControlList, ControlItem */}
-            <ResizablePanel defaultSize={3} className="overflow-auto">
+        <div className="h-screen w-screen flex flex-col overflow-hidden bg-gray-950">
+            <Navbar />
+            <div className="flex-1 flex overflow-hidden">
                 <MenuList />
-                <MenuItem />
-                <ControlList />
-                <ControlItem />
-            </ResizablePanel>
-            <ResizableHandle />            {/* Panel giữa: hiển thị phụ đề sử dụng SubtitleDisplay */}
-            <ResizablePanel defaultSize={20} className="overflow-auto">
-                <SubtitleDisplay maxSceneTime={300} />
-            </ResizablePanel>
-            <ResizableHandle />
-            {/* Panel bên phải: Scene chính và timeline bên dưới */}
-            <ResizablePanel defaultSize={50} className="overflow-auto">
-                <ResizablePanelGroup direction="vertical" style={{ height: "100%" }}>
-                    <ResizablePanel defaultSize={70} className="relative">
-                    <Navbar />
-                    <Scene stateManager={stateManager} />
+                <ResizablePanelGroup direction="horizontal" className="flex-1">
+                    <ResizablePanel defaultSize={20} minSize={15} maxSize={35}>
+                        <MenuItem />
                     </ResizablePanel>
                     <ResizableHandle />
-                    <ResizablePanel
-                        defaultSize={30}
-                        ref={timelinePanelRef}
-                        className="min-h-[50px]"
-                        onResize={handleTimelineResize}
-                    >
-                        {playerRef && <Timeline stateManager={stateManager} />}
+                    <ResizablePanel defaultSize={60} minSize={40}>
+                        <ResizablePanelGroup direction="vertical">
+                            <ResizablePanel defaultSize={70} minSize={50}>
+                                <div className="h-full flex flex-col">
+                                    <ControlList />
+                                    <div className="flex-1 relative overflow-hidden">
+                                        <Scene 
+                                            stateManager={stateManager}
+                                            isPlayerLocked={isPlayerLocked}
+                                            onTogglePlayerLock={togglePlayerLock}
+                                        />
+                                        <ControlItem />
+                                    </div>
+                                </div>
+                            </ResizablePanel>
+                            <ResizableHandle />
+                            <ResizablePanel 
+                                defaultSize={30} 
+                                minSize={20} 
+                                maxSize={50}
+                                ref={timelinePanelRef}
+                                onResize={handleTimelineResize}
+                            >
+                                <Timeline 
+                                    stateManager={stateManager} 
+                                    isLocked={isTimelineLocked}
+                                    onToggleLock={toggleTimelineLock}
+                                />
+                            </ResizablePanel>
+                        </ResizablePanelGroup>
                     </ResizablePanel>
                 </ResizablePanelGroup>
-            </ResizablePanel>
-        </ResizablePanelGroup>
+            </div>
+            
+            {/* Keyboard Shortcuts Component */}
+            <KeyboardShortcuts />
+        </div>
     );
-};
-
-export default App;
+}

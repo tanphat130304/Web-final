@@ -1,5 +1,5 @@
 import useStore from "@/pages/editor/store/use-store";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { filter, subject } from "@designcombo/events";
 import {
   PLAYER_PAUSE,
@@ -11,10 +11,12 @@ import {
 } from "@/global";
 import { LAYER_PREFIX, LAYER_SELECTION } from "@designcombo/state";
 import { TIMELINE_SEEK, TIMELINE_PREFIX } from "@designcombo/timeline";
+
 const useTimelineEvents = () => {
   const { playerRef, fps, timeline, setState } = useStore();
+  const isProcessingRef = useRef(false);
 
-  //handle player events
+  // Handle player events with improved error handling
   useEffect(() => {
     const playerEvents = subject.pipe(
       filter(({ key }) => key.startsWith(PLAYER_PREFIX)),
@@ -26,28 +28,73 @@ const useTimelineEvents = () => {
     const timelineEventsSubscription = timelineEvents.subscribe((obj) => {
       if (obj.key === TIMELINE_SEEK) {
         const { time } = obj.value?.payload;
-        playerRef?.current?.seekTo((time / 1000) * fps);
+        if (playerRef?.current && typeof time === 'number') {
+          try {
+            playerRef.current.seekTo((time / 1000) * fps);
+          } catch (error) {
+            console.warn("Error seeking timeline:", error);
+          }
+        }
       }
     });
+
     const playerEventsSubscription = playerEvents.subscribe((obj) => {
-      if (obj.key === PLAYER_SEEK) {
-        const { time } = obj.value?.payload;
-        playerRef?.current?.seekTo((time / 1000) * fps);
-      } else if (obj.key === PLAYER_PLAY) {
-        playerRef?.current?.play();
-      } else if (obj.key === PLAYER_PAUSE) {
-        playerRef?.current?.pause();
-      } else if (obj.key === PLAYER_TOGGLE_PLAY) {
-        if (playerRef?.current?.isPlaying()) {
-          playerRef?.current?.pause();
-        } else {
-          playerRef?.current?.play();
+      // Prevent duplicate processing of events
+      if (isProcessingRef.current) return;
+      isProcessingRef.current = true;
+
+      try {
+        if (obj.key === PLAYER_SEEK) {
+          const { time } = obj.value?.payload;
+          if (playerRef?.current && typeof time === 'number') {
+            playerRef.current.seekTo((time / 1000) * fps);
+          }
+        } else if (obj.key === PLAYER_PLAY) {
+          if (playerRef?.current) {
+            playerRef.current.play();
+          }
+        } else if (obj.key === PLAYER_PAUSE) {
+          if (playerRef?.current) {
+            playerRef.current.pause();
+          }
+        } else if (obj.key === PLAYER_TOGGLE_PLAY) {
+          if (playerRef?.current) {
+            try {
+              const isCurrentlyPlaying = playerRef.current.isPlaying();
+              if (isCurrentlyPlaying) {
+                playerRef.current.pause();
+              } else {
+                playerRef.current.play();
+              }
+            } catch (error) {
+              console.warn("Error toggling player:", error);
+              // Fallback: try to play if checking state fails
+              try {
+                playerRef.current.play();
+              } catch (playError) {
+                console.warn("Error playing video:", playError);
+              }
+            }
+          }
+        } else if (obj.key === PLAYER_SEEK_BY) {
+          const { frames } = obj.value?.payload;
+          if (playerRef?.current && typeof frames === 'number') {
+            try {
+              const currentFrame = playerRef.current.getCurrentFrame();
+              const targetFrame = Math.max(0, Math.round(currentFrame) + frames);
+              playerRef.current.seekTo(targetFrame);
+            } catch (error) {
+              console.warn("Error seeking by frames:", error);
+            }
+          }
         }
-      } else if (obj.key === PLAYER_SEEK_BY) {
-        const { frames } = obj.value?.payload;
-        playerRef?.current?.seekTo(
-          Math.round(playerRef?.current?.getCurrentFrame()) + frames,
-        );
+      } catch (error) {
+        console.warn("Error processing player event:", error);
+      } finally {
+        // Use requestAnimationFrame to ensure smooth processing
+        requestAnimationFrame(() => {
+          isProcessingRef.current = false;
+        });
       }
     });
 
@@ -57,7 +104,7 @@ const useTimelineEvents = () => {
     };
   }, [playerRef, fps]);
 
-  // handle selection events
+  // Handle selection events with improved performance
   useEffect(() => {
     const selectionEvents = subject.pipe(
       filter(({ key }) => key.startsWith(LAYER_PREFIX)),
@@ -65,13 +112,27 @@ const useTimelineEvents = () => {
 
     const selectionSubscription = selectionEvents.subscribe((obj) => {
       if (obj.key === LAYER_SELECTION) {
-        setState({
-          activeIds: obj.value?.payload.activeIds,
-        });
+        const activeIds = obj.value?.payload?.activeIds;
+        if (Array.isArray(activeIds)) {
+          // Use requestAnimationFrame for smooth state updates
+          requestAnimationFrame(() => {
+            setState({
+              activeIds: activeIds,
+            });
+          });
+        }
       }
     });
+
     return () => selectionSubscription.unsubscribe();
-  }, [timeline]);
+  }, [timeline, setState]);
+
+  // Add cleanup for processing ref
+  useEffect(() => {
+    return () => {
+      isProcessingRef.current = false;
+    };
+  }, []);
 };
 
 export default useTimelineEvents;

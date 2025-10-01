@@ -4,79 +4,115 @@ import { useState, useEffect } from "react";
 import useAuthStore from "@/store/use-auth-store";
 import useVideoStore from "@/store/use-video-store";
 import useLayoutStore from "../store/use-layout-store";
+import { X, Download, CheckCircle2, XCircle, AlertCircle, Loader2, Video, VideoOff } from "lucide-react";
 
 interface SelectOption {
   value: string;
   label: string;
 }
 
-const RESOLUTION_OPTIONS: SelectOption[] = [
-  { value: "auto", label: "Auto" },
-  { value: "1080p", label: "1080p" },
-  { value: "720p", label: "720p" }
+// Simplified options - only essential ones
+const QUALITY_OPTIONS: SelectOption[] = [
+  { value: "1080p", label: "Full HD (1080p)" },
+  { value: "720p", label: "HD (720p)" },
+  { value: "480p", label: "SD (480p)" }
 ];
 
-const FPS_OPTIONS: SelectOption[] = [
-  { value: "auto", label: "Auto" },
-  { value: "30", label: "30 FPS" },
-  { value: "60", label: "60 FPS" }
+const VIDEO_TYPE_OPTIONS: SelectOption[] = [
+  { value: "original", label: "Video gốc" },
+  { value: "dubbed", label: "Video đã lồng tiếng" }
 ];
 
-const ENCODING_OPTIONS: SelectOption[] = [
-  { value: "h264", label: "H.264" },
-  { value: "hevc", label: "HEVC" }
-];
+// Toast notification component
+const Toast = ({ 
+  type, 
+  message, 
+  onClose 
+}: { 
+  type: 'success' | 'error' | 'warning';
+  message: string;
+  onClose: () => void;
+}) => {
+  const icons = {
+    success: <CheckCircle2 className="w-5 h-5 text-green-500" />,
+    error: <XCircle className="w-5 h-5 text-red-500" />,
+    warning: <AlertCircle className="w-5 h-5 text-yellow-500" />
+  };
+  
+  const bgColors = {
+    success: 'bg-green-50 border-green-200',
+    error: 'bg-red-50 border-red-200',
+    warning: 'bg-yellow-50 border-yellow-200'
+  };
 
-const BITRATE_OPTIONS: SelectOption[] = [
-  { value: "medium", label: "Trung Bình" },
-  { value: "high", label: "Cao" },
-  { value: "low", label: "Thấp" }
-];
+  useEffect(() => {
+    const timer = setTimeout(onClose, 5000);
+    return () => clearTimeout(timer);
+  }, [onClose]);
 
-const FORMAT_OPTIONS: SelectOption[] = [
-  { value: "mp4", label: "MP4" }
-  // { value: "mkv", label: "MKV" },
-  // { value: "avi", label: "AVI" }
-];
+  return (
+    <div className={`fixed top-4 right-4 max-w-md p-4 rounded-lg border shadow-lg z-50 ${bgColors[type]}`}>
+      <div className="flex items-start gap-3">
+        {icons[type]}
+        <div className="flex-1">
+          <p className="text-sm text-gray-800 font-medium">{message}</p>
+        </div>
+        <button 
+          onClick={onClose}
+          className="text-gray-400 hover:text-gray-600"
+        >
+          <X className="w-4 h-4" />
+        </button>
+      </div>
+    </div>
+  );
+};
 
 export const Render = () => {
-  const [selectedAction, setSelectedAction] = useState<string>("none");
-  const [resolution, setResolution] = useState("auto");
-  const [fps, setFps] = useState("auto");
-  const [encoding, setEncoding] = useState("h264");
-  const [bitrate, setBitrate] = useState("medium");
-  const [format, setFormat] = useState("mp4");
+  const [quality, setQuality] = useState("1080p");
+  const [videoType, setVideoType] = useState("original");
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ type: 'success' | 'error' | 'warning'; message: string } | null>(null);
   const [videoTtsId, setVideoTtsId] = useState<string | null>(null);
   const [hasVideoToExport, setHasVideoToExport] = useState(false);
+  const [hasDubbedVideo, setHasDubbedVideo] = useState(false);
+  const [downloadProgress, setDownloadProgress] = useState(0);
   
   const { accessToken } = useAuthStore();
   const { selectedVideoId } = useVideoStore();
   const { setShowMenuItem, setActiveMenuItem } = useLayoutStore();
-  
-  // Kiểm tra xem có video_tts_id trong localStorage không khi component mount
+
+  // Show toast notification
+  const showToast = (type: 'success' | 'error' | 'warning', message: string) => {
+    setToast({ type, message });
+  };
+
+  // Close modal
+  const closeModal = () => {
+    setShowMenuItem(false);
+    setActiveMenuItem(null);
+  };
+
+  // Check available videos on mount
   useEffect(() => {
-    // Đầu tiên kiểm tra videoTtsId hiện tại trong localStorage
+    if (selectedVideoId) {
+      setHasVideoToExport(true);
+      console.log('Video gốc có sẵn cho video ID:', selectedVideoId);
+    } else {
+      setHasVideoToExport(false);
+    }
+
+    // Check for dubbed video
     const storedVideoTtsId = localStorage.getItem('videoTtsId');
     
-    // Sau đó kiểm tra xem có video_tts_id cho video hiện tại không
     if (selectedVideoId) {
       try {
-        // Lấy map của video_id -> video_tts_id từ localStorage
         const videoTtsMap = JSON.parse(localStorage.getItem('videoTtsMap') || '{}');
         
-        // Kiểm tra xem có video_tts_id cho video này không
         if (videoTtsMap[selectedVideoId]) {
           const mappedVideoTtsId = videoTtsMap[selectedVideoId];
-          console.log(`Đã tìm thấy video_tts_id cho video ${selectedVideoId}:`, mappedVideoTtsId);
-          
-          // Cập nhật state
           setVideoTtsId(mappedVideoTtsId);
-          setHasVideoToExport(true);
-          
-          // Cập nhật localStorage hiện tại với video_tts_id này
+          setHasDubbedVideo(true);
           localStorage.setItem('videoTtsId', mappedVideoTtsId);
           return;
         }
@@ -85,328 +121,262 @@ export const Render = () => {
       }
     }
     
-    // Nếu không tìm thấy trong map, sử dụng videoTtsId hiện tại (nếu có)
     if (storedVideoTtsId) {
       setVideoTtsId(storedVideoTtsId);
-      setHasVideoToExport(true);
-      console.log('Đã tìm thấy video_tts_id trong localStorage:', storedVideoTtsId);
+      setHasDubbedVideo(true);
     } else {
-      setHasVideoToExport(false);
-      console.log('Không tìm thấy video_tts_id trong localStorage');
+      setHasDubbedVideo(false);
     }
   }, [selectedVideoId]);
 
-  // Hàm để tải xuống video từ API
-  const downloadVideo = async (videoTtsId: string) => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      setSuccess(null);
-      
-      // Kiểm tra xem có access token không
-      if (!accessToken) {
-        throw new Error("Bạn cần đăng nhập để tải xuống video");
-      }
+  // Auto switch to original if dubbed not available
+  useEffect(() => {
+    if (videoType === "dubbed" && !hasDubbedVideo) {
+      setVideoType("original");
+      showToast('warning', 'Video lồng tiếng không có sẵn. Đã chuyển về video gốc.');
+    }
+  }, [videoType, hasDubbedVideo]);
 
-      const response = await fetch(`http://localhost:8000/api/v1/videos/videotts/${videoTtsId}`, {
+  // Get available video type options
+  const getAvailableVideoTypeOptions = (): SelectOption[] => {
+    const options: SelectOption[] = [{ value: "original", label: "Video gốc" }];
+    if (hasDubbedVideo) {
+      options.push({ value: "dubbed", label: "Video đã lồng tiếng" });
+    }
+    return options;
+  };
+
+  // Download with progress simulation
+  const downloadWithProgress = async (url: string, filename: string) => {
+    try {
+      const response = await fetch(url, {
         method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${accessToken}`
-        }
+        headers: { 'Authorization': `Bearer ${accessToken}` }
       });
       
       if (!response.ok) {
         if (response.status === 401) {
-          throw new Error("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại");
+          throw new Error("Phiên đăng nhập đã hết hạn");
         }
-        throw new Error(`Lỗi HTTP: ${response.status}`);
+        throw new Error(`Lỗi tải xuống: ${response.status}`);
+      }
+
+      // Simulate progress for better UX
+      const intervals = [10, 30, 50, 70, 85, 95];
+      for (const progress of intervals) {
+        setDownloadProgress(progress);
+        await new Promise(resolve => setTimeout(resolve, 200));
       }
       
-      // Lấy dữ liệu blob từ response
       const videoBlob = await response.blob();
+      setDownloadProgress(100);
       
-      // Tạo đối tượng URL cho blob
-      const url = window.URL.createObjectURL(videoBlob);
-      
-      // Tạo thẻ a để tải xuống
+      // Download file
+      const url_blob = window.URL.createObjectURL(videoBlob);
       const a = document.createElement('a');
       a.style.display = 'none';
-      a.href = url;
-      a.download = `video-xuất-bản-${Date.now()}.${format}`;
+      a.href = url_blob;
+      a.download = filename;
       
-      // Thêm thẻ a vào body, click để tải xuống, và xóa thẻ
       document.body.appendChild(a);
       a.click();
-      window.URL.revokeObjectURL(url);
+      window.URL.revokeObjectURL(url_blob);
       document.body.removeChild(a);
       
-      console.log("Đã tải xuống video thành công");
-      
-      // Hiển thị thông báo thành công
-      setSuccess("Video đã được tải xuống thành công!");
-      
-      // Đóng modal sau 2 giây
-      setTimeout(() => {
-        setShowMenuItem(false);
-        setActiveMenuItem(null);
-      }, 2000);
+      return true;
     } catch (error) {
-      console.error("Lỗi khi tải xuống video:", error);
-      setError(error instanceof Error ? error.message : "Lỗi không xác định khi tải xuống video");
-      if (error instanceof Error && error.message.includes("401")) {
-        alert("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại");
+      throw error;
+    } finally {
+      setDownloadProgress(0);
+    }
+  };
+
+  // Handle download
+  const handleDownload = async () => {
+    if (!selectedVideoId) {
+      showToast('error', 'Vui lòng chọn một video trước khi xuất bản');
+      return;
+    }
+
+    if (!accessToken) {
+      showToast('error', 'Bạn cần đăng nhập để tải xuống video');
+      return;
+    }
+
+    setIsLoading(true);
+    
+    try {
+      let url: string;
+      let filename: string;
+      
+      if (videoType === "original") {
+        url = `http://localhost:8000/api/v1/videos/${selectedVideoId}`;
+        filename = `video-gốc-${quality}-${Date.now()}.mp4`;
       } else {
-        alert(error instanceof Error ? error.message : "Lỗi khi tải xuống video");
+        if (!videoTtsId) {
+          showToast('error', 'Video lồng tiếng không có sẵn');
+          return;
+        }
+        url = `http://localhost:8000/api/v1/videos/videotts/${videoTtsId}`;
+        filename = `video-lồng-tiếng-${quality}-${Date.now()}.mp4`;
       }
+
+      await downloadWithProgress(url, filename);
+      
+      showToast('success', 'Video đã được tải xuống thành công!');
+      
+      // Close modal after successful download
+      setTimeout(closeModal, 1500);
+      
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Lỗi không xác định';
+      showToast('error', `Lỗi tải xuống: ${errorMessage}`);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleAction = (action: string) => {
-    switch (action) {
-      case "backup":
-        // Xử lý tải backup
-        alert("Chức năng tải backup đang được phát triển");
-        break;
-      case "srt":
-        // Xử lý tải SRT
-        alert("Chức năng tải SRT đang được phát triển");
-        break;
-      case "save":
-        // Xử lý lưu
-        alert("Chức năng lưu đang được phát triển");
-        break;
-      case "publish":
-        // Xử lý xuất bản và tải xuống video
-        if (!selectedVideoId) {
-          alert("Vui lòng chọn một video trước khi xuất bản");
-          return;
-        }
-        
-        if (!videoTtsId) {
-          alert("Không tìm thấy video đã lồng tiếng. Vui lòng lồng tiếng video trước khi xuất bản.");
-          return;
-        }
-        
-        // Tải xuống video
-        downloadVideo(videoTtsId);
-        break;
-      case "cancel":
-        // Xử lý hủy - đóng modal
-        setShowMenuItem(false);
-        setActiveMenuItem(null);
-        break;
-    }
-  };
-
   return (
-    <div
-      className="modal-container absolute rounded-lg text-white relative overflow-hidden transition-all duration-150 opacity-100 scale-100"
-      style={{
-        top: "50%",
-        left: "50%",
-        transform: "translate(-50%, -50%)",
-        width: "50vw",
-        height: "60vh",
-        zIndex: 200,
-        background: 'linear-gradient(40deg, rgb(28, 0, 82), rgb(0, 3, 22))',
-        isolation: 'isolate',
-        boxShadow: '0 0 4px rgba(39, 6, 95, 0.4), 0 0 40px rgba(103, 0, 108, 0.2)',
-        borderRadius: '20px',
-      }}
-    >
-      <style>
-        {`
-          .modal-container.closing {
-            opacity: 0;
-            transform: translate(-50%, -50%) scale(0.95);
-          }
-        `}
-      </style>
-      <svg xmlns="http://www.w3.org/2000/svg" className="absolute top-0 left-0 w-0 h-0">
-        <defs>
-          <filter id="goo">
-            <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur" />
-            <feColorMatrix in="blur" mode="matrix" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 18 -8" result="goo" />
-            <feBlend in="SourceGraphic" in2="goo" />
-          </filter>
-        </defs>
-      </svg>
+    <>
+      {/* Toast notification */}
+      {toast && (
+        <Toast
+          type={toast.type}
+          message={toast.message}
+          onClose={() => setToast(null)}
+        />
+      )}
 
-      <div className="gradients-container absolute inset-0 -z-10" style={{ filter: 'url(#goo) blur(20px)' }}>
-        {[...Array(5)].map((_, i) => (
-          <div
-            key={i}
-            className={`g${i + 1} absolute w-2/5 h-2/5 opacity-${[30, 30, 30, 20, 25][i]} ${
-              i === 3 ? 'animate-move-horizontal' : 'animate-move-in-circle'
-            }`}
-            style={{
-              background: [
-                'radial-gradient(circle at center, rgba(0, 0, 0, 1) 0%, rgba(18, 83, 255, 0.3) 20%, rgba(18, 83, 255, 0.3) 50%, rgba(0, 0, 0, 0.95) 80%, rgba(0, 0, 0, 1) 100%)',
-                'radial-gradient(circle at center, rgba(0, 0, 0, 1) 0%, rgba(181, 54, 215, 0.3) 20%, rgba(126, 54, 215, 0.3) 50%, rgba(0, 0, 0, 0.95) 80%, rgba(0, 0, 0, 1) 100%)',
-                'radial-gradient(circle at center, rgba(0, 0, 0, 1) 0%, rgba(80, 180, 255, 0.3) 20%, rgba(80, 180, 255, 0.3) 50%, rgba(0, 0, 0, 0.95) 80%, rgba(0, 0, 0, 1) 100%)',
-                'radial-gradient(circle at center, rgba(0, 0, 0, 1) 0%, rgba(147, 51, 234, 0.3) 20%, rgba(147, 51, 234, 0.3) 50%, rgba(0, 0, 0, 0.95) 80%, rgba(0, 0, 0, 1) 100%)',
-                'radial-gradient(circle at center, rgba(0, 0, 0, 1) 0%, rgba(236, 72, 153, 0.3) 20%, rgba(236, 72, 153, 0.3) 50%, rgba(0, 0, 0, 0.95) 80%, rgba(0, 0, 0, 1) 100%)'
-              ][i],
-              mixBlendMode: 'hard-light',
-              top: `${30 + i * 5}%`,
-              left: `${30 + i * 5}%`
-            }}
-          />
-        ))}
-      </div>
-
-      <div className="relative z-10 p-6">
-        <h2 className="mb-2 text-ls">Xuất bản</h2>
-        
-        {/* Hiển thị trạng thái video */}
-        <div className={`text-sm ${hasVideoToExport ? 'text-green-400' : 'text-yellow-400'} mb-4`}>
-          {hasVideoToExport 
-            ? "Video đã lồng tiếng sẵn sàng để xuất bản" 
-            : "Chưa có video lồng tiếng. Vui lòng lồng tiếng video trước khi xuất bản."}
-        </div>
-
-        <br />
-
-        {/* Form xuất bản */}
-        <div className="grid grid-cols-[1fr_150px] gap-x-4 gap-y-3 max-w-[400px] ml-auto">
-          <div className="flex justify-end w-full">
-            <label className="self-center text-sm font-medium w-[140px]">
-              Độ phân giải:
-            </label>
-          </div>
-          <div className="w-full">
-            <SelectEffect
-              id="resolution"
-              value={resolution}
-              onChange={(e) => setResolution(e.target.value)}
-              options={RESOLUTION_OPTIONS}
-              title="Chọn độ phân giải xuất video"
-            />
-          </div>
-
-          <div className="flex justify-end w-full">
-            <label className="self-center text-sm font-medium w-[140px]">
-              Tốc độ khung hình:
-            </label>
-          </div>
-          <div className="w-full">
-            <SelectEffect
-              id="fps"
-              value={fps}
-              onChange={(e) => setFps(e.target.value)}
-              options={FPS_OPTIONS}
-              title="Chọn tốc độ khung hình"
-            />
-          </div>
-
-          <div className="flex justify-end w-full">
-            <label className="self-center text-sm font-medium w-[140px]">
-              Mã hóa:
-            </label>
-          </div>
-          <div className="w-full">
-            <SelectEffect
-              id="encoding"
-              value={encoding}
-              onChange={(e) => setEncoding(e.target.value)}
-              options={ENCODING_OPTIONS}
-              title="Chọn chuẩn mã hóa video"
-            />
-          </div>
-
-          <div className="flex justify-end w-full">
-            <label className="self-center text-sm font-medium w-[140px]">
-              Tốc độ Bit:
-            </label>
-          </div>
-          <div className="w-full">
-            <SelectEffect
-              id="bitrate"
-              value={bitrate}
-              onChange={(e) => setBitrate(e.target.value)}
-              options={BITRATE_OPTIONS}
-              title="Chọn tốc độ bit cho video"
-            />
-          </div>
-
-          <div className="flex justify-end w-full">
-            <label className="self-center text-sm font-medium w-[140px]">
-              Định dạng:
-            </label>
-          </div>
-          <div className="w-full">
-            <SelectEffect
-              id="format"
-              value={format}
-              onChange={(e) => setFormat(e.target.value)}
-              options={FORMAT_OPTIONS}
-              title="Chọn định dạng file xuất"
-            />
-          </div>
-        </div>
-
-        <br />
-        <br />
-
-        {/* Hiển thị thông báo lỗi nếu có */}
-        {error && (
-          <div className="mt-4 p-2 bg-red-500/20 text-red-200 rounded-md text-sm">
-            {error}
-          </div>
-        )}
-        
-        {/* Hiển thị thông báo thành công nếu có */}
-        {success && (
-          <div className="mt-4 p-2 bg-green-500/20 text-green-200 rounded-md text-sm">
-            {success}
-          </div>
-        )}
-        
-        {/* Nút hành động */}
-        <div className="mt-4 flex justify-end gap-2">
-          {/* <ActionButton
-            label="Tải backup"
-            onClick={() => handleAction("backup")}
-            variant="tree"
-            disabled={isLoading}
-          /> */}
-          {/* <ActionButton
-            label="Tải .SRT"
-            onClick={() => handleAction("srt")}
-            variant="pink"
-            disabled={isLoading}
-          /> */}
-          {/* <ActionButton
-            label="Lưu"
-            onClick={() => handleAction("save")}
-            variant="green"
-            disabled={isLoading}
-          /> */}
-          {isLoading ? (
-            <button 
-              className="px-4 py-2 bg-blue-600 text-white rounded-md flex items-center justify-center gap-2 opacity-70 cursor-not-allowed"
-              disabled
+      {/* Modal */}
+      <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+        <div className="bg-slate-900 rounded-xl shadow-2xl w-full max-w-md border border-slate-700">
+          {/* Header */}
+          <div className="flex items-center justify-between p-6 border-b border-slate-700">
+            <h2 className="text-xl font-semibold text-white flex items-center gap-2">
+              <Download className="w-5 h-5" />
+              Xuất bản video
+            </h2>
+            <button
+              onClick={closeModal}
+              className="text-slate-400 hover:text-white transition-colors"
+              disabled={isLoading}
             >
-              <div className="w-4 h-4 border-2 border-t-transparent border-white rounded-full animate-spin"></div>
-              Đang tải...
+              <X className="w-5 h-5" />
             </button>
-          ) : (
-            <ActionButton
-              label="Tải xuống"
-              onClick={() => handleAction("publish")}
-              variant="blue"
-            />
-          )}
-          <ActionButton
-            label="Hủy"
-            onClick={() => handleAction("cancel")}
-            variant="red"
-            disabled={isLoading}
-          />
+          </div>
+
+          {/* Content */}
+          <div className="p-6 space-y-6">
+            {/* Video Status */}
+            <div className="space-y-3">
+              <h3 className="text-sm font-medium text-slate-300 mb-2">Trạng thái video</h3>
+              
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-800">
+                {hasVideoToExport ? (
+                  <Video className="w-4 h-4 text-green-400" />
+                ) : (
+                  <VideoOff className="w-4 h-4 text-red-400" />
+                )}
+                <div className="flex-1">
+                  <div className="text-sm text-white">Video gốc</div>
+                  <div className={`text-xs ${hasVideoToExport ? 'text-green-400' : 'text-red-400'}`}>
+                    {hasVideoToExport ? 'Có sẵn' : 'Không có'}
+                  </div>
+                </div>
+                <div className={`w-2 h-2 rounded-full ${hasVideoToExport ? 'bg-green-400' : 'bg-red-400'}`} />
+              </div>
+
+              <div className="flex items-center gap-3 p-3 rounded-lg bg-slate-800">
+                {hasDubbedVideo ? (
+                  <Video className="w-4 h-4 text-green-400" />
+                ) : (
+                  <VideoOff className="w-4 h-4 text-yellow-400" />
+                )}
+                <div className="flex-1">
+                  <div className="text-sm text-white">Video lồng tiếng</div>
+                  <div className={`text-xs ${hasDubbedVideo ? 'text-green-400' : 'text-yellow-400'}`}>
+                    {hasDubbedVideo ? 'Có sẵn' : 'Chưa có'}
+                  </div>
+                </div>
+                <div className={`w-2 h-2 rounded-full ${hasDubbedVideo ? 'bg-green-400' : 'bg-yellow-400'}`} />
+              </div>
+            </div>
+
+            {/* Settings */}
+            <div className="space-y-4">
+              <h3 className="text-sm font-medium text-slate-300">Cài đặt xuất bản</h3>
+              
+              {/* Video Type */}
+              <div className="space-y-2">
+                <label className="text-sm text-slate-300">Loại video</label>
+                <SelectEffect
+                  id="videoType"
+                  value={videoType}
+                  onChange={(e) => setVideoType(e.target.value)}
+                  options={getAvailableVideoTypeOptions()}
+                  title="Chọn loại video"
+                />
+              </div>
+
+              {/* Quality */}
+              <div className="space-y-2">
+                <label className="text-sm text-slate-300">Chất lượng</label>
+                <SelectEffect
+                  id="quality"
+                  value={quality}
+                  onChange={(e) => setQuality(e.target.value)}
+                  options={QUALITY_OPTIONS}
+                  title="Chọn chất lượng video"
+                />
+              </div>
+            </div>
+
+            {/* Progress bar during download */}
+            {isLoading && downloadProgress > 0 && (
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm text-slate-300">
+                  <span>Đang tải xuống...</span>
+                  <span>{downloadProgress}%</span>
+                </div>
+                <div className="w-full bg-slate-700 rounded-full h-2">
+                  <div 
+                    className="bg-blue-500 h-2 rounded-full transition-all duration-300"
+                    style={{ width: `${downloadProgress}%` }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="flex gap-3 p-6 border-t border-slate-700">
+            <button
+              onClick={closeModal}
+              disabled={isLoading}
+              className="flex-1 px-4 py-2 text-slate-300 hover:text-white hover:bg-slate-700 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Hủy
+            </button>
+            <button
+              onClick={handleDownload}
+              disabled={isLoading || !hasVideoToExport}
+              className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Đang xuất bản...
+                </>
+              ) : (
+                <>
+                  <Download className="w-4 h-4" />
+                  Xuất bản
+                </>
+              )}
+            </button>
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 };

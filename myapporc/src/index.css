@@ -399,3 +399,161 @@ input[type="number"]::-webkit-outer-spin-button {
   transform: translate(0, -50%);
 }
 
+/* Enhanced Subtitle Scroll Styles */
+.subtitle-scroll-container {
+  scrollbar-width: thin;
+  scrollbar-color: #6b7280 #1f2937;
+  overscroll-behavior: contain;
+}
+
+.subtitle-scroll-container::-webkit-scrollbar {
+  width: 12px;
+}
+
+.subtitle-scroll-container::-webkit-scrollbar-track {
+  background: #1f2937;
+  border-radius: 6px;
+  margin: 4px;
+}
+
+.subtitle-scroll-container::-webkit-scrollbar-thumb {
+  background: #6b7280;
+  border-radius: 6px;
+  border: 2px solid #1f2937;
+  transition: background-color 0.2s ease;
+}
+
+.subtitle-scroll-container::-webkit-scrollbar-thumb:hover {
+  background: #9ca3af;
+}
+
+.subtitle-scroll-container::-webkit-scrollbar-thumb:active {
+  background: #d1d5db;
+}
+
+/* Đảm bảo scroll container cô lập */
+.subtitle-scroll-container {
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Smooth scroll cho subtitle container */
+.subtitle-scroll-container {
+  scroll-behavior: smooth;
+}
+
+/* Video aspect ratio preservation */
+.video-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.video-container video,
+.video-container canvas {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  object-position: center;
+}
+
+/* Fullscreen video player styles */
+.fullscreen-video-player {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 9999;
+  background: black;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fullscreen-video-player video,
+.fullscreen-video-player canvas {
+  max-width: 100vw;
+  max-height: 100vh;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+}
+
+/* Enhanced video controls */
+.video-controls {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(to top, rgba(0,0,0,0.8), rgba(0,0,0,0.4), transparent);
+  padding: 1rem;
+  transition: opacity 0.3s ease;
+}
+
+.video-controls button {
+  background: transparent;
+  border: none;
+  color: white;
+  padding: 0.5rem;
+  border-radius: 50%;
+  transition: background-color 0.2s ease;
+  cursor: pointer;
+}
+
+.video-controls button:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+/* Remotion player aspect ratio fixes */
+.remotion-player {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.remotion-player video {
+  object-fit: contain !important;
+  object-position: center !important;
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Scene board video container */
+.designcombo_scene {
+  position: relative;
+  background: #000;
+}
+
+.designcombo_scene .remotion-player {
+  object-fit: contain;
+}
+
+/* Player container aspect ratio preservation */
+.player-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #000;
+}
+
+/* Ensure videos maintain aspect ratio in timeline thumbnails */
+.video-thumbnail {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+}
+
+/* Prevent video stretching in editor */
+.designcombo-scene-item-type-video {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.designcombo-scene-item-type-video video {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+

@@ -51,7 +51,7 @@ def get_bucket_region(bucket_name: str, access_key_id: str | None, secret_access
 def get_s3_client():
     """
     Create a new S3 client with configuration from settings.
-    Attempts to use the region of a reference bucket ('srt-input-storage-ft') if AWS_REGION is not optimal.
+    Uses the configured region directly (no bucket location autodetect).
     Uses IAM role if no credentials are provided (e.g., on EC2/ECS).
     """
     settings = get_settings()
@@ -59,26 +59,9 @@ def get_s3_client():
     aws_secret_access_key = settings.AWS_SECRET_ACCESS_KEY or None
     configured_region = settings.AWS_REGION
     
-    logger.info(f"Configured AWS region from settings: {configured_region}")
-
-    # As per user instruction, try to determine region from 'srt-input-storage-ft'
-    # This client will then be used for other operations which might be on different buckets.
-    # This assumes 'srt-input-storage-ft' is a primary reference for the correct operational region.
-    # A more robust solution for multi-region operations might involve region detection per-call or per-bucket clients.
-    
-    # For fetching bucket location, we might need a client.
-    # Let's use the configured_region for this initial detection client, or let Boto3 decide.
-    try:
-        # Using the specific bucket "srt-input-storage-ft" as per user's suggestion.
-        # This means the client returned by get_s3_client() will be optimized for this bucket's region.
-        effective_region = get_bucket_region("srt-input-storage-ft", aws_access_key_id, aws_secret_access_key, configured_region)
-        if effective_region != configured_region:
-            logger.info(f"Overriding configured region '{configured_region}' with detected region '{effective_region}' from bucket 'srt-input-storage-ft'.")
-        else:
-            logger.info(f"Using region '{effective_region}' (matches configured or detected from 'srt-input-storage-ft').")
-    except Exception as e:
-        logger.error(f"Error in region detection logic using 'srt-input-storage-ft', falling back to configured region '{configured_region}': {e}")
-        effective_region = configured_region if configured_region else 'us-east-1' # Ensure there's a fallback
+    logger.info(f"Configured AWS region from settings (no autodetect): {configured_region}")
+    # Use configured region directly; fallback to us-east-1 if empty
+    effective_region = configured_region if configured_region else 'us-east-1'
 
     session = boto3.Session()
     return session.client(
@@ -313,7 +296,7 @@ def download_file_from_s3(file_url: str, bucket_name: str, download_path: str) -
         
         # Specific test case validation (as requested by user)
         test_s3_key = "Attack on Titan_ The Last Attack - Official Trailer (2025)_subtitles_1.srt"
-        test_bucket = "srt-input-storage-ft"
+        test_bucket = "srt-input-storage-ft-2004"
         # Construct expected download path carefully, os.path.join normalizes slashes
         # The user's example path for download_path was 'tempsrt/Attack%20on%20Titan...'
         # However, local filenames usually don't keep %20. Assuming download_path is the unescaped version.
@@ -338,14 +321,14 @@ def download_file_from_s3(file_url: str, bucket_name: str, download_path: str) -
         
         # Specific test case validation log for failure
         test_s3_key_for_log = "Attack on Titan_ The Last Attack - Official Trailer (2025)_subtitles_1.srt"
-        if bucket_name == "srt-input-storage-ft" and s3_key == test_s3_key_for_log:
+        if bucket_name == "srt-input-storage-ft-2004" and s3_key == test_s3_key_for_log:
              logger.error(f"TEST VALIDATION (s3_process.py): FAILED to download specific test file '{test_s3_key_for_log}'. Details: {log_message}")
         return False
     except Exception as e:
         logger.error(f"Unexpected error downloading s3://{bucket_name}/{s3_key} to {download_path}: {str(e)}", exc_info=True)
         # Specific test case validation log for unexpected failure
         test_s3_key_for_log_unexpected = "Attack on Titan_ The Last Attack - Official Trailer (2025)_subtitles_1.srt"
-        if bucket_name == "srt-input-storage-ft" and s3_key == test_s3_key_for_log_unexpected:
+        if bucket_name == "srt-input-storage-ft-2004" and s3_key == test_s3_key_for_log_unexpected:
             logger.error(f"TEST VALIDATION (s3_process.py): FAILED to download specific test file '{test_s3_key_for_log_unexpected}' due to unexpected error: {str(e)}")
         return False
 

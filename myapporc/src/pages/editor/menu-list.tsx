@@ -18,11 +18,11 @@ export default function MenuList() {
     { id: "uploads", icon: Icons.upload, label: "Tải lên" },
     { id: "playlist", icon: Icons.playlist, label: "Danh sách phát" },
     { id: "dubbing", icon: Icons.dubbing, label: "Lồng tiếng" },
+    { id: "subtitle", icon: Icons.subtitle, label: "Phụ đề" },
     { id: "render", icon: Icons.render, label: "Xuất bản" },
     { id: "audio", icon: Icons.audio, label: "Âm thanh" },
     { id: "logo", icon: Icons.logo, label: "Logo" },
     { id: "settings", icon: Icons.settings, label: "Cài đặt" },
-    { id: "subtitle", icon: Icons.subtitle, label: "Phụ đề" },
     { id: "user", icon: Icons.user, label: "Người dùng" },
   ];
 

@@ -1,8 +1,23 @@
-import React, { useState, useEffect } from "react";
-import * as ScrollArea from "@radix-ui/react-scroll-area";
+import React, { useState, useEffect, useRef, useCallback } from "react";
 import useAuthStore from "@/store/use-auth-store";
 import useVideoStore from "@/store/use-video-store";
 import useStore from "@/pages/editor/store/use-store";
+import useSubtitleHistoryStore, { Subtitle } from "@/store/use-subtitle-history-store";
+import { 
+  Trash2, 
+  RotateCcw, 
+  Save, 
+  AlertCircle,
+  Loader2,
+  FileText,
+  Video,
+  Languages,
+  Undo2,
+  Redo2,
+  Clock,
+  CheckCircle2,
+  PlayCircle
+} from "lucide-react";
 
 // Hàm phân tích nội dung SRT
 const parseSRT = (srtContent: string) => {
@@ -24,7 +39,7 @@ const parseSRT = (srtContent: string) => {
           startTime,
           endTime,
           original: originalText,
-          translated: '' // Ban đầu để trống
+          translated: ''
         });
       }
     }
@@ -38,53 +53,82 @@ const getVideoId = (): string | null => {
   return localStorage.getItem('current_video_id');
 };
 
-interface Subtitle {
-  id: number;
-  original: string;
-  translated: string;
-  startTime?: string;
-  endTime?: string;
-}
-
 interface SubtitleDisplayProps {
   subtitles?: Subtitle[];
   maxSceneTime?: number;
 }
 
-interface ContainerCheckboxState {
-  lt1: boolean;
-  lt2: boolean;
-  lt3: boolean;
+interface SubtitleStatus {
+  hasOriginal: boolean;
+  hasTranslated: boolean;
+  videoId: string | null;
+  errorMessage: string | null;
 }
 
 const formatTime = (seconds: number): string => {
-  const min = Math.floor(seconds / 60);
-  const sec = Math.floor(seconds % 60);
-  return `${min}:${sec < 10 ? "0" : ""}${sec}s`;
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}s`;
 };
+
+// Cache cho subtitle
+const subtitleCache: Record<string, { 
+  subtitles: Subtitle[],
+  timestamp: number,
+  status: SubtitleStatus
+}> = {};
+const CACHE_DURATION = 30 * 60 * 1000; // 30 phút
 
 const SubtitleDisplay: React.FC<SubtitleDisplayProps> = ({ subtitles: propSubtitles, maxSceneTime: propMaxSceneTime }) => {
   const { isAuthenticated, accessToken } = useAuthStore();
-  const { selectedVideoId } = useVideoStore();
+  const { selectedVideoId, getSelectedVideo } = useVideoStore();
   const store = useStore();
+  const { 
+    subtitles, 
+    setSubtitles, 
+    deleteSubtitle, 
+    editSubtitle, 
+    undo, 
+    redo, 
+    canUndo, 
+    canRedo,
+    clearHistory,
+    history,
+    currentHistoryIndex
+  } = useSubtitleHistoryStore();
+  
   const [maxSceneTime, setMaxSceneTime] = useState<number>(propMaxSceneTime || 60);
-  const [allLt1State, setAllLt1State] = useState<boolean>(false);
-  const [allLt2State, setAllLt2State] = useState<boolean>(false);
-  const [allLt3State, setAllLt3State] = useState<boolean>(false);
-  const [subtitles, setSubtitles] = useState<Subtitle[]>(propSubtitles || []);
+  const [localSubtitles, setLocalSubtitles] = useState<Subtitle[]>(propSubtitles || []);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
+  const [subtitleStatus, setSubtitleStatus] = useState<SubtitleStatus>({
+    hasOriginal: false,
+    hasTranslated: false,
+    videoId: null,
+    errorMessage: null
+  });
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [undoMessage, setUndoMessage] = useState<string>("");
+  const fetchInProgress = useRef(false);
   
-  // Cập nhật maxSceneTime từ thời lượng video trong store
+  // Get selected video info
+  const selectedVideo = getSelectedVideo();
+  
+  // Sync subtitle store with local state
+  useEffect(() => {
+    if (subtitles.length > 0) {
+      setLocalSubtitles(subtitles);
+    }
+  }, [subtitles]);
+  
+  // Cập nhật maxSceneTime từ thời lượng video
   useEffect(() => {
     if (store.trackItemsMap) {
-      // Tìm video item trong trackItemsMap
       const videoItems = Object.values(store.trackItemsMap).filter(item => item.type === "video");
       
       if (videoItems.length > 0 && videoItems[0]) {
-        // Nếu có thông tin duration, cập nhật maxSceneTime
         if (videoItems[0].duration) {
-          // Chuyển từ milliseconds sang seconds
           const durationInSeconds = Math.floor(videoItems[0].duration / 1000);
           console.log(`Cập nhật thời lượng video từ metadata: ${durationInSeconds}s`);
           setMaxSceneTime(durationInSeconds);
@@ -93,325 +137,275 @@ const SubtitleDisplay: React.FC<SubtitleDisplayProps> = ({ subtitles: propSubtit
     }
   }, [store.trackItemsMap]);
   
-  // Fetch subtitles from API when component is mounted
+  // Fetch subtitles from API
   useEffect(() => {
-    // If subtitles are provided through props, use them
     if (propSubtitles && propSubtitles.length > 0) {
+      setLocalSubtitles(propSubtitles);
       setSubtitles(propSubtitles);
+      setSubtitleStatus({
+        hasOriginal: true,
+        hasTranslated: propSubtitles.some(sub => sub.translated && sub.translated.trim() !== ''),
+        videoId: 'props',
+        errorMessage: null
+      });
       return;
     }
-      const fetchSubtitles = async () => {
-      // Sử dụng video ID từ store, fallback to localStorage
+
+    const fetchSubtitles = async () => {
+      if (fetchInProgress.current) {
+        console.log("Đang tải phụ đề, bỏ qua yêu cầu trùng lặp");
+        return;
+      }
+
       const videoId = selectedVideoId || 
-                     localStorage.getItem('mostRecentVideoId') || 
-                     localStorage.getItem('selectedVideoId');
+                      localStorage.getItem('mostRecentVideoId') || 
+                      localStorage.getItem('selectedVideoId') ||
+                      localStorage.getItem('current_video_id');
+      
+      console.log('[SubtitleDisplay] Video ID sources:', {
+        selectedVideoId,
+        mostRecentVideoId: localStorage.getItem('mostRecentVideoId'),
+        legacySelectedVideoId: localStorage.getItem('selectedVideoId'),
+        currentVideoId: localStorage.getItem('current_video_id'),
+        finalVideoId: videoId
+      });
       
       if (!videoId) {
-        setError("Không tìm thấy ID video. Vui lòng chọn một video từ danh sách.");
+        const errorMsg = "Không tìm thấy ID video. Vui lòng chọn một video từ danh sách.";
+        console.warn('[SubtitleDisplay]', errorMsg);
+        setError(errorMsg);
+        setSubtitleStatus({
+          hasOriginal: false,
+          hasTranslated: false,
+          videoId: null,
+          errorMessage: errorMsg
+        });
         setIsLoading(false);
         return;
       }
       
-      console.log("Đang sử dụng video ID:", videoId);
+      const cachedData = subtitleCache[videoId];
+      const now = Date.now();
+      
+      if (cachedData && now - cachedData.timestamp < CACHE_DURATION) {
+        console.log("Sử dụng phụ đề từ cache cho video:", videoId);
+        setLocalSubtitles(cachedData.subtitles);
+        setSubtitles(cachedData.subtitles);
+        setSubtitleStatus(cachedData.status);
+        setIsLoading(false);
+        return;
+      }
+      
+      console.log("🎬 Bắt đầu tải phụ đề cho video ID:", videoId);
       
       setIsLoading(true);
       setError(null);
+      setSubtitleStatus({
+        hasOriginal: false,
+        hasTranslated: false,
+        videoId: videoId,
+        errorMessage: null
+      });
+      fetchInProgress.current = true;
+      
+      let currentStatus: SubtitleStatus = {
+        hasOriginal: false,
+        hasTranslated: false,
+        videoId: videoId,
+        errorMessage: null
+      };
       
       try {
-        // Kiểm tra xem đã đăng nhập chưa
         if (!isAuthenticated || !accessToken) {
           throw new Error("Bạn chưa đăng nhập. Vui lòng đăng nhập để xem phụ đề.");
         }
         
-        // Thử gọi API với accessToken từ useAuthStore
-        console.log("Gọi API phụ đề gốc:", `http://localhost:8000/api/v1/videos/srt/${videoId}/original`);
-        console.log("Token xác thực:", accessToken ? "Đã tìm thấy" : "Không tìm thấy");
-        console.log("Token value:", accessToken);
+        console.log("📥 Gọi API phụ đề gốc:", `http://localhost:8000/api/v1/videos/srt/${videoId}/original`);
         
-        // Tải phụ đề gốc
         const originalResponse = await fetch(`http://localhost:8000/api/v1/videos/srt/${videoId}/original`, {
           method: 'GET',
           headers: {
-            'Content-Type': 'text/plain',
-            'Accept': 'text/plain, */*',
             'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
           },
         });
         
-        if (!originalResponse.ok) {
-          if (originalResponse.status === 401) {
-            throw new Error("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
-          } else if (originalResponse.status === 404) {
-            throw new Error("Không tìm thấy phụ đề cho video này.");
-          } else {
-            throw new Error(`Lỗi khi tải phụ đề gốc: ${originalResponse.status}`);
-          }
-        }
-        
-        // Phân tích phụ đề gốc
-        const originalSrtContent = await originalResponse.text();
-        const parsedOriginalSubtitles = parseSRT(originalSrtContent);
-        
-        // Thử tải phụ đề đã dịch
-        console.log("Gọi API phụ đề đã dịch:", `http://localhost:8000/api/v1/videos/srt/${videoId}/translated`);
-        
-        try {
+        if (originalResponse.ok) {
+          const originalSrt = await originalResponse.text();
+          const originalSubtitles = parseSRT(originalSrt);
+          console.log(`✅ Tải thành công ${originalSubtitles.length} phụ đề gốc`);
+          currentStatus.hasOriginal = true;
+          
+          try {
+            console.log("📥 Gọi API phụ đề đã dịch:", `http://localhost:8000/api/v1/videos/srt/${videoId}/translated`);
           const translatedResponse = await fetch(`http://localhost:8000/api/v1/videos/srt/${videoId}/translated`, {
             method: 'GET',
             headers: {
-              'Content-Type': 'text/plain',
               'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json',
             },
           });
           
           if (translatedResponse.ok) {
-            // Nếu phụ đề đã dịch tồn tại, tích hợp vào kết quả
-            const translatedSrtContent = await translatedResponse.text();
-            const parsedTranslatedSubtitles = parseSRT(translatedSrtContent);
-            
-            // Kết hợp phụ đề gốc và đã dịch
-            const combinedSubtitles = parsedOriginalSubtitles.map(original => {
-              // Tìm phụ đề dịch tương ứng dựa trên ID
-              const translatedMatch = parsedTranslatedSubtitles.find(
-                translated => translated.id === original.id
-              );
+              const translatedSrt = await translatedResponse.text();
+              const translatedSubtitles = parseSRT(translatedSrt);
+              console.log(`✅ Tải thành công ${translatedSubtitles.length} phụ đề đã dịch`);
+              currentStatus.hasTranslated = true;
               
+              const mergedSubtitles = originalSubtitles.map(originalSub => {
+                const translatedSub = translatedSubtitles.find(transSub => transSub.id === originalSub.id);
               return {
-                ...original,
-                translated: translatedMatch ? translatedMatch.original : ''
+                  ...originalSub,
+                  translated: translatedSub ? translatedSub.original : ''
               };
             });
-            
-            setSubtitles(combinedSubtitles);
-          } else {
-            // Nếu không có phụ đề đã dịch, chỉ sử dụng phụ đề gốc
-            console.log("Không tìm thấy phụ đề đã dịch, chỉ hiển thị phụ đề gốc");
-            setSubtitles(parsedOriginalSubtitles);
+              
+              setLocalSubtitles(mergedSubtitles);
+              setSubtitles(mergedSubtitles);
+              clearHistory(); // Clear history when loading new subtitles
+            } else {
+              console.log("⚠️ Không có phụ đề đã dịch, chỉ hiển thị phụ đề gốc");
+              setLocalSubtitles(originalSubtitles);
+              setSubtitles(originalSubtitles);
+              clearHistory();
+            }
+          } catch (translatedError) {
+            console.log("⚠️ Lỗi khi tải phụ đề đã dịch:", translatedError);
+            setLocalSubtitles(originalSubtitles);
+            setSubtitles(originalSubtitles);
+            clearHistory();
           }
-        } catch (translatedError) {
-          // Nếu có lỗi khi tải phụ đề dịch, vẫn hiển thị phụ đề gốc
-          console.warn("Lỗi khi tải phụ đề đã dịch:", translatedError);
-          setSubtitles(parsedOriginalSubtitles);
+        } else {
+          if (originalResponse.status === 404) {
+            throw new Error("Video này chưa có phụ đề được tạo. Vui lòng tạo phụ đề trước khi sử dụng.");
+          } else if (originalResponse.status === 401) {
+            throw new Error("Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.");
+          } else {
+            throw new Error(`Lỗi tải phụ đề: ${originalResponse.status} ${originalResponse.statusText}`);
+          }
         }
-      } catch (error: any) {
-        console.error("Lỗi khi tải phụ đề:", error);
-        setError(`Không thể tải phụ đề: ${error.message}`);
-      } finally {
+      } catch (error) {
+        console.error("❌ Lỗi tải phụ đề:", error);
+        const errorMessage = error instanceof Error ? error.message : "Lỗi không xác định khi tải phụ đề";
+        setError(errorMessage);
+        currentStatus.errorMessage = errorMessage;
+          }
+          
+          subtitleCache[videoId] = {
+        subtitles: localSubtitles,
+        timestamp: Date.now(),
+        status: currentStatus
+      };
+      
+      setSubtitleStatus(currentStatus);
         setIsLoading(false);
-      }
+        fetchInProgress.current = false;
     };
     
     fetchSubtitles();
-  }, [propSubtitles, selectedVideoId, accessToken, isAuthenticated]);
-  const [containerStates, setContainerStates] = useState<Record<number, ContainerCheckboxState>>(() => {
-      if (!subtitles.length) return {};
-      
-      return subtitles.reduce((acc, cur) => {
-        acc[cur.id] = { lt1: false, lt2: false, lt3: false };
-        return acc;
-      }, {} as Record<number, ContainerCheckboxState>);
-    });
+  }, [selectedVideoId, isAuthenticated, accessToken]);
+
+  // Event handlers with history support
+  const handleDeleteLine = (id: number) => {
+    console.log("Delete line", id);
+    const newSubtitles = deleteSubtitle(id);
+    setLocalSubtitles(newSubtitles);
   
-  // Update container states when subtitles change
-  useEffect(() => {
-    if (subtitles.length) {
-      setContainerStates(
-        subtitles.reduce((acc, cur) => {
-          acc[cur.id] = { lt1: false, lt2: false, lt3: false };
-          return acc;
-        }, {} as Record<number, ContainerCheckboxState>)
-      );
+    // Show undo message
+    const deletedSubtitle = localSubtitles.find(sub => sub.id === id);
+    if (deletedSubtitle) {
+      setUndoMessage(`Đã xóa phụ đề #${id}`);
+      setTimeout(() => setUndoMessage(""), 3000);
     }
-  }, [subtitles]);
-
-  const undoAction = () => console.log("Undo action");
-  const deleteLine = (id: number) => console.log("Delete line", id);
-  const rerollLine = (id: number) => console.log("Reroll line", id);
-  const changeDrawTimeline = (e: React.ChangeEvent<HTMLSelectElement>) =>
-    console.log("Changed timeline segment:", e.target.value);
-
-  const handleAllLt1Change = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const checked = e.target.checked;
-    setAllLt1State(checked);
-    setContainerStates(prev => {
-      const updated = { ...prev };
-      Object.keys(updated).forEach(key => {
-        updated[+key] = { ...updated[+key], lt1: checked };
-      });
-      return updated;
-    });
+  };
+  
+  const handleRerollLine = (id: number) => {
+    console.log("Reroll line", id);
+    // TODO: Implement reroll functionality
   };
 
-  const handleAllLt2Change = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const checked = e.target.checked;
-    setAllLt2State(checked);
-    setContainerStates(prev => {
-      const updated = { ...prev };
-      Object.keys(updated).forEach(key => {
-        updated[+key] = { ...updated[+key], lt2: checked };
-      });
-      return updated;
-    });
+  const handleEditSubtitle = (id: number, changes: Partial<Subtitle>) => {
+    const newSubtitles = editSubtitle(id, changes);
+    setLocalSubtitles(newSubtitles);
+    setEditingId(null);
   };
 
-  const handleAllLt3Change = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const checked = e.target.checked;
-    setAllLt3State(checked);
-    setContainerStates(prev => {
-      const updated = { ...prev };
-      Object.keys(updated).forEach(key => {
-        updated[+key] = { ...updated[+key], lt3: checked };
-      });
-      return updated;
-    });
+  const handleUndo = () => {
+    const undoSubtitles = undo();
+    if (undoSubtitles) {
+      setLocalSubtitles(undoSubtitles);
+      setUndoMessage("Đã hoàn tác");
+      setTimeout(() => setUndoMessage(""), 2000);
+    }
   };
 
-  const handleContainerLt1Change = (id: number, checked: boolean) => {
-    setContainerStates(prev => ({
-      ...prev,
-      [id]: { ...prev[id], lt1: checked },
-    }));
+  const handleRedo = () => {
+    const redoSubtitles = redo();
+    if (redoSubtitles) {
+      setLocalSubtitles(redoSubtitles);
+      setUndoMessage("Đã làm lại");
+      setTimeout(() => setUndoMessage(""), 2000);
+    }
   };
 
-  const handleContainerLt2Change = (id: number, checked: boolean) => {
-    setContainerStates(prev => ({
-      ...prev,
-      [id]: { ...prev[id], lt2: checked },
-    }));
+  const saveSubtitles = () => {
+    console.log("Save subtitles", localSubtitles);
+    // TODO: Implement save functionality
   };
 
-  const handleContainerLt3Change = (id: number, checked: boolean) => {
-    setContainerStates(prev => ({
-      ...prev,
-      [id]: { ...prev[id], lt3: checked },
-    }));
-  };
+  // Keyboard shortcuts for undo/redo
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
+        e.preventDefault();
+        handleRedo();
+      }
+    };
 
-  // Style dùng chung
-  const rightGroupStyle: React.CSSProperties = {
-    marginLeft: "auto",
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-    flexShrink: 0,
-  };
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
-  const rightGroupStyleControl: React.CSSProperties = {
-    ...rightGroupStyle,
-    marginRight: "12px",
-  };
-
-  const containerStyle: React.CSSProperties = {
-    backgroundColor: "rgba(229, 236, 255, 0.1)",
-    padding: "12px",
-    margin: "10px 0",
-    borderRadius: "8px",
-    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
-  };
-
-  // Header của phần edit, được đặt sticky để luôn hiển thị
-  const controlHeaderStyle: React.CSSProperties = {
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-    padding: "8px",
-    backgroundColor: "#1a1a1a",
-    zIndex: 10,
-  };
-
-  const leftControlStyle: React.CSSProperties = {
-    display: "flex",
-    alignItems: "center",
-    gap: "8px",
-    flexShrink: 1,
-    overflow: "hidden",
-    whiteSpace: "nowrap",
-  };
-
-  const headerStyle: React.CSSProperties = {
-    marginBottom: "8px",
-    borderBottom: "1px solid #ccc",
-    paddingBottom: "4px",
-    display: "flex",
-    justifyContent: "space-between",
-    alignItems: "center",
-  };
-
-  const mainTextStyle: React.CSSProperties = {
-    cursor: "pointer",
-    fontWeight: 500,
-    opacity: 0.5,
-    fontSize: "0.8rem",
-  };
-
-  const textAreaStyle: React.CSSProperties = {
-    width: "100%",
-    padding: "8px",
-    borderRadius: "4px",
-    border: "1px solid #ccc",
-    resize: "vertical",
-    backgroundColor: "transparent",
-    color: "#fff",
-  };
-
-  const CheckboxGroup = () => (
-    <div style={rightGroupStyle}>
-      <input
-        type="checkbox"
-        checked={allLt1State}
-        onChange={handleAllLt1Change}
-        className="long_tieng_all"
-        style={{ cursor: "pointer" }}
-      />
-      <input
-        type="checkbox"
-        checked={allLt2State}
-        onChange={handleAllLt2Change}
-        className="long_tieng_all"
-        style={{ cursor: "pointer" }}
-      />
-      <input
-        type="checkbox"
-        checked={allLt3State}
-        onChange={handleAllLt3Change}
-        className="long_tieng_all"
-        style={{ cursor: "pointer" }}
-      />
-    </div>
-  );
-  // Add loading and error handling UI
+  // Loading state
   if (isLoading) {
     return (
       <div className="flex h-full w-full items-center justify-center">
-        <div className="flex flex-col items-center">
-          <div className="text-lg text-white mb-4">Đang tải phụ đề...</div>
-          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-white"></div>
+        <div className="flex flex-col items-center space-y-3 p-6">
+          <Loader2 className="h-8 w-8 animate-spin text-blue-500" />
+          <div className="text-sm font-medium text-white">Đang tải phụ đề...</div>
+          <div className="text-xs text-gray-400">Vui lòng chờ trong giây lát</div>
         </div>
       </div>
     );
-  }  if (error) {
-    // Kiểm tra nếu lỗi liên quan đến đăng nhập
+  }
+
+  // Error state
+  if (error) {
     const isAuthError = error.includes("đăng nhập") || 
                         error.includes("Phiên") || 
                         error.includes("401");
     
     return (
       <div className="flex h-full w-full items-center justify-center">
-        <div className="flex flex-col items-center">
-          <div className="text-lg text-red-500 mb-4">{error}</div>
+        <div className="flex flex-col items-center space-y-4 p-6 max-w-sm mx-4">
+          <AlertCircle className="h-8 w-8 text-red-500" />
+          <div className="text-sm font-medium text-red-400 text-center">{error}</div>
           
           {isAuthError ? (
-            // Hiển thị nút đăng nhập lại nếu lỗi liên quan đến xác thực
             <button 
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors text-sm font-medium"
               onClick={() => window.location.href = '/auth'}
             >
               Đăng nhập lại
             </button>
           ) : (
-            // Hiển thị nút thử lại cho các lỗi khác
             <button 
-              className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors text-sm font-medium"
               onClick={() => window.location.reload()}
             >
               Thử lại
@@ -422,204 +416,219 @@ const SubtitleDisplay: React.FC<SubtitleDisplayProps> = ({ subtitles: propSubtit
     );
   }
 
-  if (!subtitles || subtitles.length === 0) {
+  // Empty state
+  if (!localSubtitles || localSubtitles.length === 0) {
     return (
       <div className="flex h-full w-full items-center justify-center">
-        <div className="text-lg text-white">Không có phụ đề nào được tìm thấy.</div>
+        <div className="flex flex-col items-center space-y-4 p-6 max-w-sm mx-4">
+          <FileText className="h-8 w-8 text-gray-500" />
+          <div className="text-sm font-medium text-white text-center">Không có phụ đề nào được tìm thấy</div>
+          {subtitleStatus.videoId && (
+            <div className="text-xs text-gray-400 text-center space-y-1">
+              <div>Video ID: {subtitleStatus.videoId}</div>
+              <div>Có thể video này chưa được xử lý hoặc không có phụ đề được tạo.</div>
+            </div>
+          )}
+          
+          <button 
+            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md transition-colors text-sm font-medium"
+            onClick={() => window.location.reload()}
+          >
+            Thử lại
+          </button>
+        </div>
       </div>
     );
   }
   
-  return (
-    <div id="string_edit" className="string-edit-layout" data-delogo="false">
-      {/* Phần header cố định */}
-      <div id="string_edit_control" style={controlHeaderStyle}>
-        <div id="chunks_left" style={leftControlStyle}>
-            <svg
-              style={{ transform: "rotateZ(270deg)", color: "blueviolet", fontSize: "20px" }}
-              width="1em"
-              height="1em"
-              viewBox="0 0 24 24"
-              preserveAspectRatio="xMidYMid meet"
-              fill="none"
-              role="presentation"
-              xmlns="http://www.w3.org/2000/svg"
-              className="iconpark-icon"
-            >
-              <g>
-                <path
-                  data-follow-fill="currentColor"
-                  fillRule="evenodd"
-                  clipRule="evenodd"
-                  d="M18 2H6a3 3 0 0 0-3 3v6a3 3 0 0 0 3 3h12a3 3 0 0 0 3-3V5a3 3 0 0 0-3-3ZM6 4h12a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1Z"
-                  fill="currentColor"
-                />
-                <path
-                  data-follow-fill="currentColor"
-                  d="M14.914 15.57L12 18.482 9.086 15.57 7.67 16.983l3.268 3.268a1.5 1.5 0 0 0 2.121 0l3.268-3.268-1.414-1.414Z"
-                  fill="currentColor"
-                />
-              </g>
-            </svg>
-          <select
-            title="Chia bản dịch thành nhiều đoạn nhỏ giảm thiểu hiện tượng giật lag trong khi chỉnh sửa!"
-            onChange={changeDrawTimeline}
-            id="chunk"
-            style={{
-              padding: "4px 8px",
-              borderRadius: "4px",
-              border: "1px solid #ccc",
-              color: "#fff",
-              backgroundColor: "transparent",
-            }}
-          >
-            <option value={`0-${maxSceneTime}`}>
-              Toàn bộ: 0:00s - {formatTime(maxSceneTime)}
-            </option>
-          </select>
-          <div
-              id="pre_button"
-              className="undo"
-              onClick={undoAction}
-              style={{ color: "rgba(222, 227, 247, 0.2)", cursor: "pointer" }}
-            >
-              <svg width="1em" height="1em" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M8.94 3.146a.5.5 0 0 1 .707 0l.707.708a.5.5 0 0 1 0 .707L7.914 7H13.5a6.5 6.5 0 0 1 0 13H6.224l.535-2H13.5a4.5 4.5 0 0 0 0-9H7.914l2.44 2.44a.5.5 0 0 1 0 .706l-.707.708a.5.5 0 0 1-.708 0l-4.5-4.5a.5.5 0 0 1 0-.708l4.5-4.5Z"
-                  fill="currentColor"
-                />
-              </svg>
+  // Status display component
+  const SubtitleStatusDisplay = () => (
+    <div className="bg-gray-800/80 px-3 py-2 border-b border-gray-700/50 flex-shrink-0">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 text-xs">
+            <Video className="h-3 w-3 text-blue-400" />
+            <span className="text-gray-300">Video:</span>
+            {selectedVideo ? (
+              <div className="flex items-center gap-1">
+                <CheckCircle2 className="h-3 w-3 text-green-400" />
+                <span className="text-green-400 font-medium">
+                  {selectedVideo.title || 'Untitled Video'}
+                </span>
+              </div>
+            ) : (
+              <span className="text-red-400 text-[10px]">Chưa chọn video</span>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className={`flex items-center gap-1 text-xs ${subtitleStatus.hasOriginal ? 'text-green-400' : 'text-red-400'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${subtitleStatus.hasOriginal ? 'bg-green-400' : 'bg-red-400'}`}></div>
+              <span>Gốc</span>
             </div>
-            <div
-              className="undo"
-              id="next_button"
-              style={{ cursor: "pointer" }}
-            >
-              <svg width="1em" height="1em" viewBox="0 0 24 24" fill="none">
-                <path
-                  d="M15.354 3.146a.5.5 0 0 0-.707 0l-.707.708a.5.5 0 0 0 0 .707L16.379 7h-5.586a6.5 6.5 0 0 0 0 13h7.277l-.536-2h-6.741a4.5 4.5 0 0 1 0-9h5.586l-2.44 2.44a.5.5 0 0 0 0 .706l.708.708a.5.5 0 0 0 .707 0l4.5-4.5a.5.5 0 0 0 0-.708l-4.5-4.5Z"
-                  fill="currentColor"
-                />
-              </svg>
+            <div className={`flex items-center gap-1 text-xs ${subtitleStatus.hasTranslated ? 'text-green-400' : 'text-yellow-400'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${subtitleStatus.hasTranslated ? 'bg-green-400' : 'bg-yellow-400'}`}></div>
+              <span>Dịch</span>
             </div>
-            <div
-              id="save_json"
-              className="undo"
-              onClick={() => console.log("Save JSON")}
-              style={{ cursor: "pointer" }}
-            >
-              <svg width="1em" height="1em" viewBox="0 0 16 16" fill="none">
-                <path
-                  d="M10.451 8.118a.5.5 0 0 1 0 .707l-2.646 2.646a.667.667 0 0 1-.943 0L5.215 9.825a.5.5 0 0 1 0-.707l.236-.236a.5.5 0 0 1 .707 0l1.175 1.175 2.175-2.175a.5.5 0 0 1 .708 0l.235.236Z"
-                  fill="currentColor"
-                />
-                <path
-                  fillRule="evenodd"
-                  clipRule="evenodd"
-                  d="M8 2a4.667 4.667 0 0 0-4.611 5.39A3.334 3.334 0 0 0 4 14h8a3.333 3.333 0 0 0 .611-6.61A4.667 4.667 0 0 0 8 2ZM3.632 8.7l1.273-.236-.199-1.28a3.333 3.333 0 1 1 6.587 0l-.198 1.28 1.273.236A2.001 2.001 0 0 1 12 12.667H4A2 2 0 0 1 3.632 8.7Z"
-                  fill="currentColor"
-                />
-              </svg>
-            </div>
+          </div>
         </div>
-        <div id="chunks_right" style={rightGroupStyleControl}>
-          <CheckboxGroup />
+        <div className="flex items-center gap-1.5 text-xs text-gray-400">
+          <FileText className="h-3 w-3" />
+          <span>{localSubtitles.length}</span>
         </div>
       </div>
+      {!subtitleStatus.hasTranslated && subtitleStatus.hasOriginal && (
+        <div className="flex items-center gap-1.5 text-yellow-400 text-[10px] mt-1.5 p-1.5 bg-yellow-400/10 rounded border border-yellow-400/20">
+          <AlertCircle className="h-2.5 w-2.5 flex-shrink-0" />
+          <span>Chỉ có phụ đề gốc, chưa có bản dịch</span>
+        </div>
+      )}
+      {selectedVideo && (
+        <div className="flex items-center gap-1.5 text-blue-400 text-[10px] mt-1.5 p-1.5 bg-blue-400/10 rounded border border-blue-400/20">
+          <PlayCircle className="h-2.5 w-2.5 flex-shrink-0" />
+          <span>ID: {selectedVideo.video_id}</span>
+        </div>
+      )}
+    </div>
+  );
 
-      {/* ScrollArea chỉ chứa danh sách phụ đề, không bao gồm header */}
-      <ScrollArea.Root
-        type="always"
-        className="SubtitleScrollRoot"
-        style={{ height: "calc(100vh - 60px)", width: "100%" }}
+  // Action bar with undo/redo
+  const ActionBar = () => (
+    <div className="bg-gray-800/80 px-3 py-2 border-b border-gray-700/50 flex-shrink-0">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="text-xs text-gray-300">
+            Chỉnh sửa phụ đề video
+          </div>
+          {history.length > 0 && (
+            <div className="flex items-center gap-1 text-[10px] text-gray-500">
+              <Clock className="h-2.5 w-2.5" />
+              <span>{currentHistoryIndex + 1}/{history.length}</span>
+            </div>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={handleUndo}
+            disabled={!canUndo()}
+            className="flex items-center gap-1 px-2 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded transition-colors text-xs font-medium"
+            title="Hoàn tác (Ctrl+Z)"
+          >
+            <Undo2 className="h-3 w-3" />
+          </button>
+          <button
+            onClick={handleRedo}
+            disabled={!canRedo()}
+            className="flex items-center gap-1 px-2 py-1 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:cursor-not-allowed text-white rounded transition-colors text-xs font-medium"
+            title="Làm lại (Ctrl+Y)"
+          >
+            <Redo2 className="h-3 w-3" />
+          </button>
+          <div className="w-px h-4 bg-gray-600 mx-1"></div>
+          <button
+            onClick={saveSubtitles}
+            className="flex items-center gap-1.5 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded transition-colors text-xs font-medium"
+            title="Lưu thay đổi"
+          >
+            <Save className="h-3 w-3" />
+            Lưu
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // Main render
+  return (
+    <div 
+      className="flex flex-col h-full bg-gray-900 text-white"
+      style={{
+        isolation: 'isolate',
+        contain: 'layout style paint'
+      }}
+    >
+      {/* Undo message */}
+      {undoMessage && (
+        <div className="absolute top-4 left-1/2 transform -translate-x-1/2 z-50 px-3 py-2 bg-green-600 text-white text-sm rounded-md shadow-lg">
+          {undoMessage}
+        </div>
+      )}
+      
+      {/* Status display */}
+      <SubtitleStatusDisplay />
+      
+      {/* Action bar with undo/redo */}
+      <ActionBar />
+
+      {/* Subtitle list with simple scroll and explicit max-height */}
+      <div 
+        className="overflow-y-auto subtitle-scroll-container p-3 space-y-3"
+        style={{
+          maxHeight: 'calc(100vh - 200px)'
+        }}
       >
-        <ScrollArea.Viewport
-          className="SubtitleScrollViewport"
-          style={{ width: "100%", paddingRight: "8px", overflowY: "auto" }}
-        >
-          {subtitles.map((subtitle) => (
-            <div
-              key={subtitle.id}
-              id={`container_${subtitle.id}`}
-              className="string_container"
-              data-name={`text_${subtitle.id}`}
-              style={containerStyle}
-            >
-              <div className="upline line" style={headerStyle}>
-                <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                  <div
-                    id={`upline_${subtitle.id}`}
-                    data-name={`text_${subtitle.id}`}
-                    onDoubleClick={() => console.log("Edit main string", subtitle.id)}
-                    className="l1 src-string line2"
-                    style={mainTextStyle}
-                  >
-                    {subtitle.original}
-                  </div>
-                  <div
-                    id={`delete_${subtitle.id}`}
-                    onClick={() => deleteLine(subtitle.id)}
-                    className="delete_line"
-                    data-name={`text_${subtitle.id}`}
-                    style={{ cursor: "pointer" }}
-                  >
-                    <i id={`icon_${subtitle.id}`} className="fa-solid fa-trash-can" />
-                  </div>
-                  <div
-                    id={`reroll_${subtitle.id}`}
-                    onClick={() => rerollLine(subtitle.id)}
-                    data-name={`text_${subtitle.id}`}
-                    className="rerool_sound"
-                    style={{ cursor: "pointer" }}
-                  >
-                    <i className="fa-solid fa-rotate-right" />
-                  </div>
+        {localSubtitles.map((subtitle, index) => (
+          <div
+            key={subtitle.id}
+            className="bg-gray-800 rounded-lg border border-gray-700 p-3 hover:border-gray-600 transition-all duration-200"
+          >
+            {/* Header with original text and controls */}
+            <div className="flex items-start justify-between gap-2 mb-2">
+              <div className="flex-1 min-w-0">
+                <div className="text-xs text-blue-400 font-mono mb-1">
+                  #{subtitle.id.toString().padStart(3, '0')}
+                  {subtitle.startTime && subtitle.endTime && (
+                    <span className="ml-2 text-gray-500">
+                      {subtitle.startTime} → {subtitle.endTime}
+                    </span>
+                  )}
                 </div>
-                <div style={rightGroupStyle}>
-                  <input
-                    type="checkbox"
-                    checked={containerStates[subtitle.id]?.lt1 || false}
-                    onChange={e => handleContainerLt1Change(subtitle.id, e.target.checked)}
-                    className="long_tieng"
-                    style={{ cursor: "pointer" }}
-                  />
-                  <input
-                    type="checkbox"
-                    checked={containerStates[subtitle.id]?.lt2 || false}
-                    onChange={e => handleContainerLt2Change(subtitle.id, e.target.checked)}
-                    className="long_tieng_2"
-                    style={{ cursor: "pointer" }}
-                  />
-                  <input
-                    type="checkbox"
-                    checked={containerStates[subtitle.id]?.lt3 || false}
-                    onChange={e => handleContainerLt3Change(subtitle.id, e.target.checked)}
-                    className="long_tieng_3"
-                    style={{ cursor: "pointer" }}
-                  />
+                <div
+                  onDoubleClick={() => setEditingId(subtitle.id)}
+                  className="text-sm text-gray-200 cursor-pointer hover:text-white transition-colors leading-relaxed break-words"
+                  title="Double-click để chỉnh sửa"
+                >
+                  {subtitle.original}
                 </div>
               </div>
-              <div className="downline line notranslate" style={{ paddingTop: "4px" }}>
-                <div className="line2">
-                  <textarea
-                    id={`textbox_${subtitle.id}`}
-                    name={`text_${subtitle.id}`}
-                    onInput={() => {}}
-                    className="json active_right"
-                    onClick={() => {}}
-                    onChange={() => {}}
-                    style={textAreaStyle}
-                    defaultValue={subtitle.translated}
-                  />
-                </div>
+              
+              <div className="flex items-center gap-1 flex-shrink-0">
+                <button
+                  onClick={() => handleDeleteLine(subtitle.id)}
+                  className="p-1 text-gray-400 hover:text-red-400 hover:bg-red-400/10 rounded transition-colors"
+                  title="Xóa dòng"
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+                <button
+                  onClick={() => handleRerollLine(subtitle.id)}
+                  className="p-1 text-gray-400 hover:text-blue-400 hover:bg-blue-400/10 rounded transition-colors"
+                  title="Tạo lại"
+                >
+                  <RotateCcw className="h-3 w-3" />
+                </button>
               </div>
             </div>
-          ))}
-        </ScrollArea.Viewport>
-        <ScrollArea.Scrollbar orientation="vertical" className="SubtitleScrollScrollbar">
-          <ScrollArea.Thumb className="SubtitleScrollThumb" />
-        </ScrollArea.Scrollbar>
-      </ScrollArea.Root>
+            
+            {/* Translated text area */}
+            <div>
+              <textarea
+                defaultValue={subtitle.translated}
+                className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent placeholder-gray-500"
+                placeholder="Nhập bản dịch..."
+                rows={2}
+                onBlur={(e) => {
+                  if (e.target.value !== subtitle.translated) {
+                    handleEditSubtitle(subtitle.id, { translated: e.target.value });
+                  }
+                }}
+              />
+            </div>
+          </div>
+        ))}
+        
+        {/* Padding bottom để scroll thoải mái */}
+        <div className="h-6"></div>
+      </div>
     </div>
   );
 };

@@ -9,6 +9,7 @@ import { Videos } from "./videos";
 import { Texts } from "./texts";
 import { Dubbing } from "./dubbing";
 import { Render } from "./render";
+import SubtitleMenuItem from "./subtitle";
 
 interface ContainerProps {
   children: React.ReactNode;
@@ -103,7 +104,7 @@ const MENU_ITEMS = {
   audio: Audios,
   logo: () => <div className="p-4">Logo Component</div>,
   settings: () => <div className="p-4">Settings Component</div>,
-  subtitle: () => <div className="p-4">Subtitle Component</div>,
+  subtitle: SubtitleMenuItem,
   user: () => <div className="p-4">User Component</div>,
   texts: Texts,
   videos: Videos,
